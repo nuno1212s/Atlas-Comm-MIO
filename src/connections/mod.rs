@@ -1,4 +1,4 @@
-mod conn_establish;
+pub(crate) mod conn_establish;
 
 use std::net::Shutdown;
 use std::sync::Arc;

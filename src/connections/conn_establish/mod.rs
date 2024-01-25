@@ -504,7 +504,8 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
 
                                                 for message in received {
 
-                                                    //TODO: This is a bit of a hack, but we need to do this in order to avoid issues with the borrow
+                                                    // TODO: We have to push the messages directly here
+
 
                                                 }
                                             }
