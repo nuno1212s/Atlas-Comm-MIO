@@ -8,9 +8,10 @@ use mio::Waker;
 use atlas_common::channel::{ChannelSyncRx, ChannelSyncTx};
 use atlas_common::error::*;
 use atlas_common::node_id::NodeId;
-use atlas_communication_v2::message::{NetworkSerializedMessage, WireMessage};
-use atlas_communication_v2::reconfiguration_node::{NetworkInformationProvider, NetworkUpdateMessage};
-use crate::connections::Connections;
+use atlas_communication::byte_stub::{NodeIncomingStub, NodeStubController};
+use atlas_communication::message::{NetworkSerializedMessage, WireMessage};
+use atlas_communication::reconfiguration_node::{NetworkInformationProvider, NetworkUpdateMessage};
+use crate::connections::{ByteMessageSendStub, Connections};
 
 
 /// A handle to a pending node's connection
@@ -54,7 +55,9 @@ pub struct RegisteredServers {
 
 impl<NI, CN, CNP> NetworkUpdateHandler<NI, CN, CNP>
     where
-        NI: NetworkInformationProvider, {
+        NI: NetworkInformationProvider + 'static,
+        CN: NodeIncomingStub + 'static,
+        CNP: NodeStubController<ByteMessageSendStub, CN> + 'static {
     pub fn initialize_update_handler(
         registered_servers: RegisteredServers,
         pending_conns: Arc<ServerRegisteredPendingConns>,

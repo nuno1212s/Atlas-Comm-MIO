@@ -12,11 +12,12 @@ use atlas_common::channel::ChannelSyncRx;
 use atlas_common::Err;
 use atlas_common::node_id::NodeId;
 use atlas_common::socket::MioSocket;
-use atlas_communication_v2::byte_stub::{ByteNetworkStub, NodeIncomingStub};
-use atlas_communication_v2::message::WireMessage;
+use atlas_communication::byte_stub::{ByteNetworkStub, NodeIncomingStub, NodeStubController};
+use atlas_communication::message::WireMessage;
+use atlas_communication::reconfiguration_node::NetworkInformationProvider;
 use crate::conn_util;
 use crate::conn_util::{ConnectionReadWork, ConnectionWriteWork, interrupted, ReadingBuffer, would_block, WritingBuffer};
-use crate::connections::{Connections, ConnHandle, PeerConn};
+use crate::connections::{ByteMessageSendStub, Connections, ConnHandle, PeerConn};
 use crate::epoll::{EpollWorkerId, EpollWorkerMessage, NewConnection};
 
 const EVENT_CAPACITY: usize = 1024;
@@ -30,7 +31,7 @@ enum ConnectionWorkResult {
 
 type ConnectionRegister = ChannelSyncRx<MioSocket>;
 
-pub struct EpollWorker<NI, CN, CNP> {
+pub(crate) struct EpollWorker<NI, CN, CNP> where NI: NetworkInformationProvider {
     worker_id: EpollWorkerId,
 
     global_conns: Arc<Connections<NI, CN, CNP>>,
@@ -57,11 +58,23 @@ enum SocketConnection<CN> {
     Waker,
 }
 
-impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
-    where CN: NodeIncomingStub {
+impl<CN> SocketConnection<CN> {
+    pub(crate) fn peer_id(&self) -> Option<NodeId> {
+        match self {
+            SocketConnection::PeerConn { handle, .. } => {
+                Some(handle.peer_id())
+            }
+            SocketConnection::Waker => None
+        }
+    }
+}
 
+impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
+    where CN: NodeIncomingStub + 'static,
+          NI: NetworkInformationProvider + 'static,
+          CNP: NodeStubController<ByteMessageSendStub, CN> + 'static {
     /// Initializing a worker thread for the worker group
-    pub fn new(worker_id: EpollWorkerId, connections: Arc<Connections<NI, CN, CNP>>,
+    pub(crate) fn new(worker_id: EpollWorkerId, connections: Arc<Connections<NI, CN, CNP>>,
                register: ChannelSyncRx<EpollWorkerMessage<CN>>) -> atlas_common::error::Result<Self> {
         let poll = Poll::new().context(format!("Failed to initialize poll for worker {:?}", worker_id))?;
 
@@ -350,11 +363,11 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
                     }
                     ConnectionReadWork::Working => { return Ok(ConnectionWorkResult::Working); }
                     ConnectionReadWork::WorkingAndReceived(received) | ConnectionReadWork::ReceivedAndDone(received) => {
-                        
+
                         // Handle the messages that we have received
                         // In this case by propagating them upwards in the architecture
                         for message in received {
-                            connection.byte_input_stub().handle_message(message)?;
+                            connection.byte_input_stub().handle_message(self.global_conns.network_info(), message)?;
                         }
                     }
                 }

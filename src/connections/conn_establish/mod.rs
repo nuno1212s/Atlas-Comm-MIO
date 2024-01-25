@@ -19,14 +19,14 @@ use atlas_common::error::*;
 use atlas_common::node_id::{NodeId, NodeType};
 use atlas_common::peer_addr::PeerAddr;
 use atlas_common::socket::{MioListener, MioSocket, SecureSocket, SecureSocketSync, SyncListener};
-use atlas_communication_v2::byte_stub::ByteNetworkStub;
-use atlas_communication_v2::lookup_table::MessageModule;
-use atlas_communication_v2::message::{Header, NetworkSerializedMessage, WireMessage};
-use atlas_communication_v2::reconfiguration_node::{NetworkInformationProvider, NetworkUpdateMessage};
+use atlas_communication::byte_stub::{ByteNetworkStub, NodeIncomingStub, NodeStubController};
+use atlas_communication::lookup_table::MessageModule;
+use atlas_communication::message::{Header, NetworkSerializedMessage, WireMessage};
+use atlas_communication::reconfiguration_node::{NetworkInformationProvider, NetworkUpdateMessage};
 use crate::conn_util;
 use crate::conn_util::{ConnCounts, ConnectionReadWork, ConnectionWriteWork, interrupted, ReadingBuffer, would_block, WritingBuffer};
 use crate::connections::conn_establish::pending_conn::{NetworkUpdate, PendingConnHandle, ServerRegisteredPendingConns};
-use crate::connections::Connections;
+use crate::connections::{ByteMessageSendStub, Connections};
 
 pub mod pending_conn;
 
@@ -83,7 +83,9 @@ enum ConnectionResult {
 }
 
 impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
-    where NI: NetworkInformationProvider, {
+    where NI: NetworkInformationProvider + 'static,
+          CN: NodeIncomingStub + 'static,
+          CNP: NodeStubController<ByteMessageSendStub, CN> + 'static {
     pub fn new(my_id: NodeId,
                mut listener: MioListener,
                conn_handler: Arc<ConnectionHandler>,
@@ -136,7 +138,7 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
     }
 
     /// Run the event loop of this worker
-    fn event_loop(mut self) -> io::Result<()> {
+    fn event_loop(mut self) -> Result<()> {
         let mut events = Events::with_capacity(DEFAULT_ALLOWED_CONCURRENT_JOINS);
 
         loop {
@@ -163,7 +165,7 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
     }
 
     /// Accept connections from the server listener
-    fn accept_connections(&mut self) -> io::Result<()> {
+    fn accept_connections(&mut self) -> Result<()> {
         loop {
             match self.listener.accept() {
                 Ok((socket, addr)) => {
@@ -206,7 +208,7 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
                 }
                 Err(ref err) if interrupted(err) => continue,
                 Err(err) => {
-                    return Err(err);
+                    return Err!(err);
                 }
             }
         }
@@ -215,7 +217,7 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
     }
 
     /// Read network update messages from the reconfiguration module
-    fn read_network_update_messages(&mut self) -> io::Result<()> {
+    fn read_network_update_messages(&mut self) -> Result<()> {
         match self.network_message_rx.try_recv() {
             Ok(message) => {
                 let (conn_handle, update_message) = message.into_inner();
@@ -285,7 +287,7 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
     }
 
     /// Handle the result of a pending connection having been reached.
-    fn handle_connection_result(&mut self, token: Token, result: ConnectionResult) -> io::Result<()> where CN: ByteNetworkStub {
+    fn handle_connection_result(&mut self, token: Token, result: ConnectionResult) -> Result<()> {
         match result {
             ConnectionResult::Connected(node_id, node_type, pending_messages) => {
                 debug!("{:?} // Incoming connection to {:?} is now established with type {:?} with token {:?}, {:?}", self.my_id, node_id, node_type, token,
@@ -309,7 +311,7 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
                             // We have identified the peer and should now handle the connection
                             for message in pending_messages {
                                 if message.header().payload_length() > 0 {
-                                    conn.byte_input_stub.dispatch_message(message)?;
+                                    conn.byte_input_stub.handle_message(&self.network_info, message)?;
                                 }
                             }
                         }
@@ -341,7 +343,7 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
     }
 
     /// Handle connection events, received from epoll
-    fn handle_connection_ev(&mut self, token: Token, ev: &Event) -> io::Result<ConnectionResult> {
+    fn handle_connection_ev(&mut self, token: Token, ev: &Event) -> Result<ConnectionResult> {
         if ev.is_readable() {
             let connection_result = self.handle_connection_readable(token)?;
 
@@ -453,7 +455,7 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
         Ok(ConnectionResult::Working)
     }
 
-    fn handle_connection_readable(&mut self, token: Token) -> io::Result<ConnectionResult> where CN: ByteNetworkStub {
+    fn handle_connection_readable(&mut self, token: Token) -> Result<ConnectionResult> {
         let connection = &mut self.currently_accepting[token.into()];
         trace!("{:?} // Handling read event for connection {:?}", self.my_id, token);
 
@@ -468,49 +470,53 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
                             ConnectionResult::Working
                         }
                         ConnectionReadWork::WorkingAndReceived(received) | ConnectionReadWork::ReceivedAndDone(received) => {
-                            if let Some(message) = received.first() {
+                            let connection_peer_id = if let Some(message) = received.first() {
                                 let header = message.header();
+                                let connection_peer_id = header.from();
 
-                                if peer_id.is_none() {
-                                    *peer_id = Some(header.from());
+                                connection_peer_id
+                            } else {
+                                return Ok(ConnectionResult::Working);
+                            };
 
-                                    // Check the general connections first as we add to this before removing from the pending connections
-                                    match self.peer_conns.get_connection(&header.from()) {
-                                        None => {
-                                            match self.registered_conns.get_pending_conn(&header.from()) {
-                                                None => {
-                                                    let node_type = self.peer_conns.network_info.get_node_type(&header.from());
+                            if peer_id.is_none() {
+                                *peer_id = Some(connection_peer_id);
 
-                                                    debug!("Received connection ID for token {:?}, from {:?}, node type is: {:?} (None means unknown)", token, header.from(), node_type);
+                                // Check the general connections first as we add to this before removing from the pending connections
+                                match self.peer_conns.get_connection(&connection_peer_id) {
+                                    None => {
+                                        match self.registered_conns.get_pending_conn(&connection_peer_id) {
+                                            None => {
+                                                let node_type = self.peer_conns.network_info.get_node_type(&connection_peer_id);
 
-                                                    if let Some(node_type) = node_type {
-                                                        return Ok(ConnectionResult::Connected(header.from(), node_type, received));
-                                                    } else {
-                                                        let to_send = conn_util::initialize_send_channel();
+                                                debug!("Received connection ID for token {:?}, from {:?}, node type is: {:?} (None means unknown)", token, connection_peer_id, node_type);
 
-                                                        self.registered_conns.insert_pending_connection(PendingConnHandle::new(peer_id.unwrap(), to_send, self.waker.clone()))
-                                                    }
+                                                if let Some(node_type) = node_type {
+                                                    return Ok(ConnectionResult::Connected(connection_peer_id, node_type, received));
+                                                } else {
+                                                    let to_send = conn_util::initialize_send_channel();
+
+                                                    self.registered_conns.insert_pending_connection(PendingConnHandle::new(peer_id.unwrap(), to_send, self.waker.clone()))
                                                 }
-                                                Some(conn) => {
-                                                    connection.fill_channel(conn.channel().clone());
+                                            }
+                                            Some(conn) => {
+                                                connection.fill_channel(conn.channel().clone());
+
+                                                for message in received {
+
+                                                    //TODO: This is a bit of a hack, but we need to do this in order to avoid issues with the borrow
+
                                                 }
                                             }
                                         }
-                                        Some(conn) => {
-                                            // This node is already known to us, we don't have to wait for reconfiguration messages
-                                            let channel = conn.to_send.clone();
+                                    }
+                                    Some(conn) => {
+                                        // This node is already known to us, we don't have to wait for reconfiguration messages
+                                        let channel = conn.to_send.clone();
 
-                                            connection.fill_channel(channel);
+                                        connection.fill_channel(channel);
 
-                                            for message in received {
-                                                // The first header, sent just after the connection is established, is just so we can identify the peer
-                                                if message.header().payload_length() > 0 {
-                                                    conn.byte_input_stub().dispatch_message(message)?;
-                                                }
-                                            }
-
-                                            return Ok(ConnectionResult::Connected(header.from(), conn.node_type, received));
-                                        }
+                                        return Ok(ConnectionResult::Connected(connection_peer_id, conn.node_type, received));
                                     }
                                 }
                             }
@@ -576,7 +582,9 @@ impl ConnectionHandler {
     pub fn connect_to_node<NI, CN, CNP>(self: &Arc<Self>, connections: Arc<Connections<NI, CN, CNP>>,
                                         peer_id: NodeId, peer_node_type: NodeType, addr: PeerAddr) -> OneShotRx<Result<()>>
         where
-            NI: NetworkInformationProvider, {
+            NI: NetworkInformationProvider + 'static,
+            CN: NodeIncomingStub + 'static,
+            CNP: NodeStubController<ByteMessageSendStub, CN> + 'static {
         let (tx, rx) = channel::new_oneshot_channel();
 
         debug!(" {:?} // Connecting to node {:?} at {:?}", self.my_id(), peer_id, addr);
@@ -599,7 +607,7 @@ impl ConnectionHandler {
                 //Get the correct IP for us to address the node
                 //If I'm a client I will always use the client facing addr
                 //While if I'm a replica I'll connect to the replica addr (clients only have this addr)
-                let addr = (addr.clone().into_inner());
+                let addr = addr.clone().into_inner();
 
                 const SECS: u64 = 1;
                 const RETRY: usize = 3 * 60;
@@ -701,7 +709,9 @@ pub fn initialize_server<NI, CN, CNP>(my_id: NodeId, listener: SyncListener,
                                       network_info: Arc<NI>,
                                       conns: Arc<Connections<NI, CN, CNP>>,
                                       network_update_channel: ChannelSyncRx<NetworkUpdate>) -> Arc<Waker>
-    where NI: NetworkInformationProvider, {
+    where NI: NetworkInformationProvider + 'static,
+          CN: NodeIncomingStub + 'static,
+          CNP: NodeStubController<ByteMessageSendStub, CN> + 'static, {
     let server_worker = ServerWorker::new(my_id.clone(),
                                           listener.into(),
                                           connection_handler.clone(),
