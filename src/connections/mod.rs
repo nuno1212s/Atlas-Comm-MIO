@@ -16,7 +16,7 @@ use atlas_common::node_id::{NodeId, NodeType};
 use atlas_common::socket::{MioSocket, SecureSocket, SecureSocketSync, SyncListener};
 use atlas_communication::byte_stub;
 use atlas_communication::byte_stub::{ByteNetworkController, NodeIncomingStub, NodeStubController};
-use atlas_communication::byte_stub::connections::ByteNetworkConnectionController;
+use atlas_communication::byte_stub::connections::NetworkConnectionController;
 use atlas_communication::message::{NetworkSerializedMessage, WireMessage};
 use atlas_communication::reconfiguration_node::NetworkInformationProvider;
 use crate::conn_util::{ConnCounts, ReadingBuffer, WritingBuffer};
@@ -374,7 +374,7 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
     }
 }
 
-impl<NI, IS, CNP> ByteNetworkConnectionController for Connections<NI, IS, CNP>
+impl<NI, IS, CNP> NetworkConnectionController for Connections<NI, IS, CNP>
     where NI: NetworkInformationProvider + 'static,
           IS: NodeIncomingStub + 'static,
           CNP: NodeStubController<ByteMessageSendStub, IS> + 'static {
