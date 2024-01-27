@@ -11,7 +11,7 @@ use atlas_common::channel::{ChannelSyncRx, ChannelSyncTx};
 use atlas_common::node_id::NodeId;
 use atlas_common::socket::MioSocket;
 use atlas_communication::byte_stub::{NodeIncomingStub, NodeStubController};
-use atlas_communication::reconfiguration_node::NetworkInformationProvider;
+use atlas_communication::reconfiguration::NetworkInformationProvider;
 use crate::conn_util::{ReadingBuffer, WritingBuffer};
 use crate::connections::{ByteMessageSendStub, Connections, PeerConn};
 use crate::epoll::epoll_worker::EpollWorker;

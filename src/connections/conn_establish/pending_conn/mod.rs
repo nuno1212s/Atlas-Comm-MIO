@@ -10,7 +10,7 @@ use atlas_common::error::*;
 use atlas_common::node_id::NodeId;
 use atlas_communication::byte_stub::{NodeIncomingStub, NodeStubController};
 use atlas_communication::message::{NetworkSerializedMessage, WireMessage};
-use atlas_communication::reconfiguration_node::{NetworkInformationProvider, NetworkUpdateMessage};
+use atlas_communication::reconfiguration::{NetworkInformationProvider, NetworkUpdateMessage};
 use crate::connections::{ByteMessageSendStub, Connections};
 
 

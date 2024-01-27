@@ -9,7 +9,7 @@ use atlas_common::node_id::{NodeId, NodeType};
 use atlas_common::socket::MioSocket;
 use atlas_communication::lookup_table::MessageModule;
 use atlas_communication::message::{Header, WireMessage};
-use atlas_communication::reconfiguration_node::NetworkInformationProvider;
+use atlas_communication::reconfiguration::NetworkInformationProvider;
 use crate::config::TcpConfig;
 
 pub type Callback = Option<Box<dyn FnOnce(bool) -> () + Send>>;

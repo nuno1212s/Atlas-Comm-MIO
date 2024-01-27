@@ -6,7 +6,7 @@ use atlas_common::node_id::NodeId;
 use atlas_common::socket;
 use atlas_common::socket::SyncListener;
 use atlas_communication::byte_stub::{ByteNetworkController, ByteNetworkStub, NodeIncomingStub, NodeStubController};
-use atlas_communication::reconfiguration_node::{NetworkInformationProvider, ReconfigurationMessageHandler};
+use atlas_communication::reconfiguration::{NetworkInformationProvider, ReconfigurationMessageHandler};
 use crate::config::MIOConfig;
 use crate::conn_util::ConnCounts;
 use crate::connections::{ByteMessageSendStub, Connections};

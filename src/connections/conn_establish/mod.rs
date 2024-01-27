@@ -22,7 +22,7 @@ use atlas_common::socket::{MioListener, MioSocket, SecureSocket, SecureSocketSyn
 use atlas_communication::byte_stub::{ByteNetworkStub, NodeIncomingStub, NodeStubController};
 use atlas_communication::lookup_table::MessageModule;
 use atlas_communication::message::{Header, NetworkSerializedMessage, WireMessage};
-use atlas_communication::reconfiguration_node::{NetworkInformationProvider, NetworkUpdateMessage};
+use atlas_communication::reconfiguration::{NetworkInformationProvider, NetworkUpdateMessage};
 use crate::conn_util;
 use crate::conn_util::{ConnCounts, ConnectionReadWork, ConnectionWriteWork, interrupted, ReadingBuffer, would_block, WritingBuffer};
 use crate::connections::conn_establish::pending_conn::{NetworkUpdate, PendingConnHandle, ServerRegisteredPendingConns};

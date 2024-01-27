@@ -14,7 +14,7 @@ use atlas_common::node_id::NodeId;
 use atlas_common::socket::MioSocket;
 use atlas_communication::byte_stub::{ByteNetworkStub, NodeIncomingStub, NodeStubController};
 use atlas_communication::message::WireMessage;
-use atlas_communication::reconfiguration_node::NetworkInformationProvider;
+use atlas_communication::reconfiguration::NetworkInformationProvider;
 use crate::conn_util;
 use crate::conn_util::{ConnectionReadWork, ConnectionWriteWork, interrupted, ReadingBuffer, would_block, WritingBuffer};
 use crate::connections::{ByteMessageSendStub, Connections, ConnHandle, PeerConn};

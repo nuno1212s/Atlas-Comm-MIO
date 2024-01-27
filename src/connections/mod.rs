@@ -18,7 +18,7 @@ use atlas_communication::byte_stub;
 use atlas_communication::byte_stub::{ByteNetworkController, NodeIncomingStub, NodeStubController};
 use atlas_communication::byte_stub::connections::NetworkConnectionController;
 use atlas_communication::message::{NetworkSerializedMessage, WireMessage};
-use atlas_communication::reconfiguration_node::NetworkInformationProvider;
+use atlas_communication::reconfiguration::NetworkInformationProvider;
 use crate::conn_util::{ConnCounts, ReadingBuffer, WritingBuffer};
 use crate::connections::conn_establish::ConnectionHandler;
 use crate::connections::conn_establish::pending_conn::{RegisteredServers, ServerRegisteredPendingConns};
