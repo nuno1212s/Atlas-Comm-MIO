@@ -5,7 +5,7 @@ use atlas_common::error::*;
 use atlas_common::node_id::NodeId;
 use atlas_common::socket;
 use atlas_common::socket::SyncListener;
-use atlas_communication::byte_stub::{ByteNetworkController, ByteNetworkStub, NodeIncomingStub, NodeStubController};
+use atlas_communication::byte_stub::{ByteNetworkController, ByteNetworkControllerInit, ByteNetworkStub, NodeIncomingStub, NodeStubController};
 use atlas_communication::reconfiguration::{NetworkInformationProvider, ReconfigurationMessageHandler};
 use crate::config::MIOConfig;
 use crate::conn_util::ConnCounts;
@@ -16,19 +16,22 @@ use crate::epoll::{init_worker_group_handle, initialize_worker_group};
 mod connections;
 mod epoll;
 pub(crate) mod conn_util;
-mod config;
+pub mod config;
 
 /// The byte level TCP MIO epoll based module
 /// Utilizes the MIO library to provide a TCP based communication layer
 /// much faster than the existing async std or tokio based options, due to the much lower overhead
 /// of (not) changing the context of the execution
+///
+/// The IS generic type indicates the type for the input stubs
+/// The CNP indicates the type for the stub controller of the upper network layer
 pub struct MIOTCPNode<NI, IS, CNP>
     where NI: NetworkInformationProvider,
           CNP: Clone {
     network_information: Arc<NI>,
     stub_controller: CNP,
     connections: Arc<Connections<NI, IS, CNP>>,
-    reconfig_msg_handle: Arc<ReconfigurationMessageHandler>,
+    reconfig_msg_handle: ReconfigurationMessageHandler,
 }
 
 impl<NI, IS, CNP> MIOTCPNode<NI, IS, CNP> where CNP: Clone, NI: NetworkInformationProvider {
@@ -37,7 +40,9 @@ impl<NI, IS, CNP> MIOTCPNode<NI, IS, CNP> where CNP: Clone, NI: NetworkInformati
     }
 }
 
-impl<NI, IS, CNP> ByteNetworkController<NI, CNP, ByteMessageSendStub, IS> for MIOTCPNode<NI, IS, CNP>
+pub type ByteStubType = ByteMessageSendStub;
+
+impl<NI, IS, CNP> ByteNetworkController for MIOTCPNode<NI, IS, CNP>
     where NI: NetworkInformationProvider + 'static,
           CNP: NodeStubController<ByteMessageSendStub, IS> + 'static,
           IS: NodeIncomingStub + 'static {
@@ -45,10 +50,20 @@ impl<NI, IS, CNP> ByteNetworkController<NI, CNP, ByteMessageSendStub, IS> for MI
 
     type ConnectionController = Connections<NI, IS, CNP>;
 
-    fn initialize_controller(network_info: Arc<NI>, config: Self::Config, stub_controllers: CNP) -> Result<Self>
-        where Self: Sized {
-        let reconfig_message_handler = Arc::new(ReconfigurationMessageHandler::initialize());
 
+    /// The controller of the connections
+    fn connection_controller(&self) -> &Arc<Self::ConnectionController> {
+        &self.connections
+    }
+}
+
+impl<NI, IS, CNP> ByteNetworkControllerInit<NI, CNP, ByteMessageSendStub, IS> for MIOTCPNode<NI, IS, CNP>
+    where NI: NetworkInformationProvider + 'static,
+          CNP: NodeStubController<ByteMessageSendStub, IS> + 'static,
+          IS: NodeIncomingStub + 'static
+{
+    fn initialize_controller(reconf: ReconfigurationMessageHandler, network_info: Arc<NI>, config: Self::Config, stub_controllers: CNP) -> Result<Self>
+        where Self: Sized {
         let (handle, receivers) = init_worker_group_handle::<NI, IS, CNP>(config.epoll_worker_count());
 
         let connections = Arc::new(Connections::initialize_connections(
@@ -61,7 +76,7 @@ impl<NI, IS, CNP> ByteNetworkController<NI, CNP, ByteMessageSendStub, IS> for MI
         NetworkUpdateHandler::initialize_update_handler(
             connections.registered_servers().clone(),
             connections.pending_server_connections().clone(),
-            reconfig_message_handler.update_channel_rx().clone(),
+            reconf.update_channel_rx().clone(),
             connections.clone(),
         );
 
@@ -79,13 +94,8 @@ impl<NI, IS, CNP> ByteNetworkController<NI, CNP, ByteMessageSendStub, IS> for MI
             network_information: network_info,
             stub_controller: stub_controllers,
             connections,
-            reconfig_msg_handle: reconfig_message_handler,
+            reconfig_msg_handle: reconf,
         })
-    }
-
-    /// The controller of the connections
-    fn connection_controller(&self) -> &Arc<Self::ConnectionController> {
-        &self.connections
     }
 }
 
