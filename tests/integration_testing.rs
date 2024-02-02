@@ -2,33 +2,36 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::iter;
-use std::net::{SocketAddr, SocketAddrV4};
-use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
+
 use anyhow::{anyhow, Context};
 use getset::Getters;
 use log::{debug, info};
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls_pemfile::{Item, read_one};
+
 use atlas_comm_mio::ByteStubType;
 use atlas_comm_mio::config::{MIOConfig, TcpConfig, TlsConfig};
 use atlas_common::channel;
 use atlas_common::channel::{ChannelSyncRx, ChannelSyncTx};
-use atlas_common::error::*;
 use atlas_common::crypto::signature::{KeyPair, PublicKey};
+use atlas_common::error::*;
 use atlas_common::node_id::{NodeId, NodeType};
 use atlas_common::peer_addr::PeerAddr;
 use atlas_communication::byte_stub::{ByteNetworkStub, NodeIncomingStub, NodeStubController};
 use atlas_communication::message::WireMessage;
 use atlas_communication::reconfiguration::NetworkInformationProvider;
 
-#[derive(Clone)]
+#[derive(Clone, Getters)]
 struct MockStubController {
     stubs: Arc<Mutex<BTreeMap<NodeId, MockStub>>>,
-    channel_tx: ChannelSyncTx<WireMessage>,
-    channel_rx: ChannelSyncRx<WireMessage>,
+    /// Channel to push received messages from the byte network layer
+    input_tx: ChannelSyncTx<WireMessage>,
+    /// Channel to receive messages from the byte network layer
+    #[get = "pub(crate)"]
+    input_rx: ChannelSyncRx<WireMessage>,
 }
 
 #[derive(Clone)]
@@ -51,9 +54,13 @@ impl NodeIncomingStub for MockStubInput {
 
 impl MockStubController {
     fn generate_stub_for(&self, node: NodeId, node_type: NodeType) -> MockStubInput {
-        let tx = self.channel_tx.clone();
+        let tx = self.input_tx.clone();
         let stub = MockStubInput(node, tx);
         stub
+    }
+
+    fn output_stub_for(&self, node: &NodeId) -> Option<MockStubOutput> {
+        self.stubs.lock().unwrap().get(node).map(|stub| stub.1.clone())
     }
 }
 
@@ -88,8 +95,8 @@ impl Default for MockStubController {
         let (tx, rx) = channel::new_bounded_sync(32, Some("MockStubController"));
         Self {
             stubs: Arc::new(Mutex::new(Default::default())),
-            channel_tx: tx,
-            channel_rx: rx,
+            input_tx: tx,
+            input_rx: rx,
         }
     }
 }
@@ -288,30 +295,23 @@ impl MockNetworkInfoFactory {
 #[cfg(test)]
 mod conn_test {
     use std::collections::BTreeMap;
-    use std::mem::size_of;
     use std::sync::Arc;
+    use test_log::test;
+
     use anyhow::{anyhow, Context};
+    use bytes::Bytes;
+    use log::{debug, info, warn};
+
     use atlas_comm_mio::MIOTCPNode;
     use atlas_common::error::*;
     use atlas_common::node_id::NodeId;
-    use atlas_communication::byte_stub::{ByteNetworkController, ByteNetworkControllerInit};
+    use atlas_communication::byte_stub::{ByteNetworkController, ByteNetworkControllerInit, ByteNetworkStub};
     use atlas_communication::byte_stub::connections::NetworkConnectionController;
-    use atlas_communication::reconfiguration::ReconfigurationMessageHandler;
-    use crate::{default_config, MockNetworkInfo, MockNetworkInfoFactory, MockStubController, MockStubInput};
-
-    use std::sync::Once;
-    use bytes::{Bytes, BytesMut};
-    use log::{debug, info, warn};
     use atlas_communication::lookup_table::MessageModule;
+    use atlas_communication::message::WireMessage;
+    use atlas_communication::reconfiguration::ReconfigurationMessageHandler;
 
-    static INIT: Once = Once::new();
-
-    /// Setup function that is only run once, even if called multiple times.
-    fn setup() {
-        INIT.call_once(|| {
-            env_logger::builder().is_test(true).try_init().expect("Failed to initialize logger");
-        });
-    }
+    use crate::{default_config, MockNetworkInfo, MockNetworkInfoFactory, MockStubController, MockStubInput};
 
     fn initialize_node_set(node_count: u32) -> Result<BTreeMap<NodeId, MIOTCPNode<MockNetworkInfo, MockStubInput, MockStubController>>> {
         let factory = MockNetworkInfoFactory::initialize_for(node_count as usize)?;
@@ -340,7 +340,6 @@ mod conn_test {
 
     #[test]
     pub fn test_message_mod_serialization() -> Result<()> {
-
         let msg_mod = MessageModule::Protocol;
 
         let vec = bincode::serde::encode_to_vec(&msg_mod, bincode::config::standard())?;
@@ -358,8 +357,6 @@ mod conn_test {
 
     #[test]
     pub fn test_conn() -> Result<()> {
-        setup();
-
         const NODE_COUNT: u32 = 3;
 
         debug!("Initializing node set");
@@ -385,8 +382,6 @@ mod conn_test {
                     result_wait.recv().unwrap()
                         .context(format!("Failed to receive result of connecting to node {:?}", other_node_id))?;
                 };
-
-
             }
         }
 
@@ -399,9 +394,49 @@ mod conn_test {
                 }
 
                 assert!(node_ref.connection_controller().has_connection(&NodeId::from(other_node)),
-                "Node {:?} does not have connection to node {:?}", node, other_node);
+                        "Node {:?} does not have connection to node {:?}", node, other_node);
             }
         }
+
+        Ok(())
+    }
+
+    #[test]
+    pub fn test_msg_delivery() -> Result<()> {
+        let nodes = initialize_node_set(2)?;
+
+        let node_0_id = NodeId::from(0u32);
+
+        let node_1_id = NodeId::from(1u32);
+
+        let result = nodes.get(&node_0_id).unwrap().connection_controller().connect_to_node(node_1_id);
+
+        result.into_iter().for_each(|result| {
+            result.recv().unwrap().context("Failed to receive result of connecting to node 1").unwrap();
+        });
+
+        let node = nodes.get(&node_0_id).unwrap();
+        let node_1 = nodes.get(&node_1_id).unwrap();
+
+        let msg = Bytes::from("Hello, world!");
+
+        let mut digest = atlas_common::crypto::hash::Context::new();
+
+        digest.update(msg.as_ref());
+
+        let digest = digest.finish();
+
+        let output_tx = node.stub_controller().output_stub_for(&node_1_id).ok_or(anyhow!("Failed to get output stub for node 1"))?;
+
+        let wire_msg = WireMessage::new(node_0_id.clone(), node_1_id.clone(),
+                                        MessageModule::Reconfiguration, msg.clone(), 0, Some(digest.clone()), None);
+
+        output_tx.1.dispatch_message(wire_msg)?;
+
+        let message = node_1.stub_controller().input_rx().recv().context("Failed to receive message from node 0")?;
+
+        assert_eq!(*(message.header().digest()), digest);
+        assert_eq!(message.payload(), msg.as_ref());
 
         Ok(())
     }

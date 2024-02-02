@@ -3,6 +3,7 @@ extern crate core;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use anyhow::Context;
+use getset::Getters;
 use atlas_common::error::*;
 use atlas_common::node_id::NodeId;
 use atlas_common::socket;
@@ -27,10 +28,13 @@ pub mod config;
 ///
 /// The IS generic type indicates the type for the input stubs
 /// The CNP indicates the type for the stub controller of the upper network layer
+#[derive(Getters)]
 pub struct MIOTCPNode<NI, IS, CNP>
     where NI: NetworkInformationProvider,
           CNP: Clone {
+    #[get = "pub"]
     network_information: Arc<NI>,
+    #[get = "pub"]
     stub_controller: CNP,
     connections: Arc<Connections<NI, IS, CNP>>,
     reconfig_msg_handle: ReconfigurationMessageHandler,
