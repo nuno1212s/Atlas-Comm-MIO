@@ -141,7 +141,7 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
     }
 
     /// Attempt to connect to a given node
-    fn connect_to_node(
+    fn internal_connect_to_node(
         self: &Arc<Self>,
         node: NodeId,
     ) -> Vec<OneShotRx<atlas_common::error::Result<()>>> {
@@ -362,7 +362,7 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
 
             self.stub_controller.shutdown_stubs_for(&node);
 
-            let _ = self.connect_to_node(node);
+            let _ = self.internal_connect_to_node(node);
         }
     }
     pub fn pending_server_connections(&self) -> &Arc<ServerRegisteredPendingConns> {
@@ -390,13 +390,11 @@ impl<NI, IS, CNP> NetworkConnectionController for Connections<NI, IS, CNP>
         self.connected_nodes()
     }
 
-    fn connect_to_node(&self, node: NodeId) -> atlas_common::error::Result<()> {
-        self.connect_to_node(node);
-
-        Ok(())
+    fn connect_to_node(self: &Arc<Self>, node: NodeId) -> Vec<OneShotRx<atlas_common::error::Result<()>>> {
+        self.internal_connect_to_node(node)
     }
 
-    fn disconnect_from_node(&self, node: &NodeId) -> atlas_common::error::Result<()> {
+    fn disconnect_from_node(self: &Arc<Self>, node: &NodeId) -> atlas_common::error::Result<()> {
         self.dc_from_node(node)
     }
 }

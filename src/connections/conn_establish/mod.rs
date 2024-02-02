@@ -3,6 +3,8 @@ use std::fmt::{Debug, Formatter};
 use std::fs::read;
 use std::io;
 use std::io::Write;
+use std::mem::size_of;
+use std::net::Shutdown;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -24,7 +26,7 @@ use atlas_communication::lookup_table::MessageModule;
 use atlas_communication::message::{Header, NetworkSerializedMessage, WireMessage};
 use atlas_communication::reconfiguration::{NetworkInformationProvider, NetworkUpdateMessage};
 use crate::conn_util;
-use crate::conn_util::{ConnCounts, ConnectionReadWork, ConnectionWriteWork, interrupted, ReadingBuffer, would_block, WritingBuffer};
+use crate::conn_util::{ConnCounts, ConnectionReadWork, ConnectionWriteWork, interrupted, ReadingBuffer, try_write_until_block, would_block, WritingBuffer};
 use crate::connections::conn_establish::pending_conn::{NetworkUpdate, PendingConnHandle, ServerRegisteredPendingConns};
 use crate::connections::{ByteMessageSendStub, Connections};
 
@@ -175,6 +177,8 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
                         // Ignore connections that would exceed our default concurrent join limit
                         warn!(" {:?} // Ignoring connection from {} since we have reached the concurrent join limit",
                             self.my_id, addr);
+
+                        socket.shutdown(Shutdown::Both)?;
 
                         continue;
                     }
@@ -460,73 +464,77 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
         trace!("{:?} // Handling read event for connection {:?}", self.my_id, token);
 
         let result = match connection {
-            PendingConnection::PendingConn { peer_id, socket, read_buf, .. } => {
-                if let Ok(read) = conn_util::read_until_block(socket, read_buf) {
-                    match read {
-                        ConnectionReadWork::ConnectionBroken => {
-                            ConnectionResult::ConnectionBroken
-                        }
-                        ConnectionReadWork::Working => {
-                            ConnectionResult::Working
-                        }
-                        ConnectionReadWork::WorkingAndReceived(received) | ConnectionReadWork::ReceivedAndDone(received) => {
-                            let connection_peer_id = if let Some(message) = received.first() {
-                                let header = message.header();
-                                let connection_peer_id = header.from();
+            PendingConnection::PendingConn { peer_id, socket, read_buf, node_type, .. } => {
+                let read = conn_util::read_until_block(socket, read_buf)?;
 
-                                connection_peer_id
-                            } else {
-                                return Ok(ConnectionResult::Working);
-                            };
+                match read {
+                    ConnectionReadWork::ConnectionBroken => {
+                        ConnectionResult::ConnectionBroken
+                    }
+                    ConnectionReadWork::Working => {
+                        ConnectionResult::Working
+                    }
+                    ConnectionReadWork::WorkingAndReceived(received) | ConnectionReadWork::ReceivedAndDone(received) => {
+                        let connection_peer_id = if let Some(message) = received.first() {
+                            let header = message.header();
+                            let connection_peer_id = header.from();
 
-                            if peer_id.is_none() {
-                                *peer_id = Some(connection_peer_id);
+                            connection_peer_id
+                        } else {
+                            trace!("Received empty message from {:?}", token);
 
-                                // Check the general connections first as we add to this before removing from the pending connections
-                                match self.peer_conns.get_connection(&connection_peer_id) {
-                                    None => {
-                                        match self.registered_conns.get_pending_conn(&connection_peer_id) {
-                                            None => {
-                                                let node_type = self.peer_conns.network_info.get_node_type(&connection_peer_id);
+                            return Ok(ConnectionResult::Working);
+                        };
 
-                                                debug!("Received connection ID for token {:?}, from {:?}, node type is: {:?} (None means unknown)", token, connection_peer_id, node_type);
+                        if peer_id.is_none() {
+                            *peer_id = Some(connection_peer_id);
 
-                                                if let Some(node_type) = node_type {
-                                                    return Ok(ConnectionResult::Connected(connection_peer_id, node_type, received));
-                                                } else {
-                                                    let to_send = conn_util::initialize_send_channel();
+                            // Check the general connections first as we add to this before removing from the pending connections
+                            match self.peer_conns.get_connection(&connection_peer_id) {
+                                None => {
+                                    match self.registered_conns.get_pending_conn(&connection_peer_id) {
+                                        None => {
+                                            let node_type = self.peer_conns.network_info.get_node_type(&connection_peer_id);
 
-                                                    self.registered_conns.insert_pending_connection(PendingConnHandle::new(peer_id.unwrap(), to_send, self.waker.clone()))
-                                                }
+                                            debug!("Received connection ID for token {:?}, from {:?}, node type is: {:?} (None means unknown)", token, connection_peer_id, node_type);
+
+                                            if let Some(node_type) = node_type {
+                                                return Ok(ConnectionResult::Connected(connection_peer_id, node_type, received));
+                                            } else {
+                                                let to_send = conn_util::initialize_send_channel();
+
+                                                self.registered_conns.insert_pending_connection(PendingConnHandle::new(peer_id.unwrap(), to_send, self.waker.clone()))
                                             }
-                                            Some(conn) => {
-                                                connection.fill_channel(conn.channel().clone());
+                                        }
+                                        Some(conn) => {
+                                            trace!("Received connection ID for token {:?}, from {:?}, node type is: {:?}\
+                                                 (None means unknown) Pending conn handle has already been established", token, connection_peer_id, node_type);
 
-                                                for message in received {
+                                            connection.fill_channel(conn.channel().clone());
 
-                                                    // TODO: We have to push the messages directly here
+                                            for message in received {
 
-
-                                                }
+                                                // TODO: We have to push the messages directly here
                                             }
                                         }
                                     }
-                                    Some(conn) => {
-                                        // This node is already known to us, we don't have to wait for reconfiguration messages
-                                        let channel = conn.to_send.clone();
+                                }
+                                Some(conn) => {
+                                    trace!("Received connection ID for token {:?}, from {:?}, node type is: {:?}\
+                                         (None means unknown) Connection already established", token, connection_peer_id, node_type);
 
-                                        connection.fill_channel(channel);
+                                    // This node is already known to us, we don't have to wait for reconfiguration messages
+                                    let channel = conn.to_send.clone();
 
-                                        return Ok(ConnectionResult::Connected(connection_peer_id, conn.node_type, received));
-                                    }
+                                    connection.fill_channel(channel);
+
+                                    return Ok(ConnectionResult::Connected(connection_peer_id, conn.node_type, received));
                                 }
                             }
-
-                            ConnectionResult::Working
                         }
+
+                        ConnectionResult::Working
                     }
-                } else {
-                    ConnectionResult::Working
                 }
             }
             _ => unreachable!()
@@ -635,29 +643,45 @@ impl ConnectionHandler {
                         Ok(mut sock) => {
 
                             // create header
-                            let (header, _, _) =
+                            let wm =
                                 WireMessage::new(my_id, peer_id,
                                                  MessageModule::Reconfiguration,
                                                  Bytes::new(), nonce,
-                                                 None, None).into_inner();
+                                                 None, None);
 
-                            // serialize header
-                            let mut buf = [0; Header::LENGTH];
-                            header.serialize_into(&mut buf[..]).unwrap();
+                            let write_info = WritingBuffer::init_from_message(wm).unwrap();
 
-                            // send header
-                            if let Err(err) = sock.write_all(&buf[..]) {
-                                // errors writing -> faulty connection;
-                                // drop this socket
-                                error!("{:?} // Failed to connect to the node {:?} {:?} ", conn_handler.my_id(), peer_id, err);
-                                break;
+                            if let Err(err) = sock.write_all(&write_info.current_header().as_ref().unwrap()) {
+                                warn!("{:?} // Error while writing header on connecting to {:?} addr {:?}: {:?}",
+                                    conn_handler.my_id(), peer_id, addr, err);
+
+                                continue;
+                            }
+
+                             match sock.write(&write_info.message_module().as_ref().unwrap()) {
+                                Ok(size) => {
+                                    warn!("{:?} // Wrote {:?} bytes", conn_handler.my_id(), size);
+                                }
+                                Err(err) =>{
+                                    warn!("{:?} // Error while writing payload on connecting to {:?} addr {:?}: {:?}",
+                                    conn_handler.my_id(), peer_id, addr, err);
+
+                                    continue;
+                                }
+                             }
+
+                            if let Err(err) = sock.write_all(&write_info.current_message()) {
+                                warn!("{:?} // Error while writing payload on connecting to {:?} addr {:?}: {:?}",
+                                    conn_handler.my_id(), peer_id, addr, err);
+
+                                continue;
                             }
 
                             if let Err(err) = sock.flush() {
-                                // errors flushing -> faulty connection;
-                                // drop this socket
-                                error!("{:?} // Failed to connect to the node {:?} {:?} ", conn_handler.my_id(), peer_id, err);
-                                break;
+                                warn!("{:?} // Error while flushing on connecting to {:?} addr {:?}: {:?}",
+                                    conn_handler.my_id(), peer_id, addr, err);
+
+                                continue;
                             }
 
                             // TLS handshake; drop connection if it fails

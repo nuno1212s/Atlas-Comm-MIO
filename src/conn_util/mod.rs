@@ -2,7 +2,8 @@ use std::io;
 use std::io::{Read, Write};
 use std::mem::size_of;
 use bytes::{Buf, Bytes, BytesMut};
-use log::{debug, trace};
+use getset::Getters;
+use log::{debug, trace, warn};
 use atlas_common::{channel, Err};
 use atlas_common::channel::{ChannelSyncRx, ChannelSyncTx};
 use atlas_common::node_id::{NodeId, NodeType};
@@ -53,6 +54,8 @@ pub(crate) struct ReadingBuffer {
 }
 
 /// The writing buffer for a TCP connection
+#[derive(Getters)]
+#[get = "pub(crate)"]
 pub(crate) struct WritingBuffer {
     written_bytes: usize,
     current_header: Option<Bytes>,
@@ -197,11 +200,14 @@ pub(crate) fn read_until_block(socket: &mut MioSocket, read_info: &mut ReadingBu
                 let currently_read = read_info.read_bytes;
                 let bytes_to_read = header.payload_length() - currently_read;
 
+                trace!("Reading message with {} bytes to read payload {}, currently_read {}", bytes_to_read, header.payload_length(), currently_read);
+
                 let read = if bytes_to_read > 0 {
                     match socket.read(&mut read_info.reading_buffer[currently_read..]) {
                         Ok(0) => {
                             // Connection closed
-                            debug!("Connection closed while reading body bytes to read: {},  currently read: {}", bytes_to_read, currently_read);
+                            warn!("Connection closed while reading body bytes to read: {},  currently read: {}", bytes_to_read, currently_read);
+
                             return Ok(ConnectionReadWork::ConnectionBroken);
                         }
                         Ok(n) => {
@@ -229,6 +235,7 @@ pub(crate) fn read_until_block(socket: &mut MioSocket, read_info: &mut ReadingBu
 
                     read_info.read_bytes = read_info.reading_buffer.len();
 
+                    // Reserve with Header length as we are going to read the header (of the next message) next
                     read_info.reading_buffer.reserve(Header::LENGTH);
                     read_info.reading_buffer.resize(Header::LENGTH, 0);
                 } else {
@@ -241,11 +248,14 @@ pub(crate) fn read_until_block(socket: &mut MioSocket, read_info: &mut ReadingBu
                 let currently_read = read_info.read_bytes;
                 let bytes_to_read = size_of::<MessageModule>() - currently_read;
 
+                trace!("Reading message module with {} bytes to read, currently read {}", bytes_to_read, currently_read);
+
                 let read = if bytes_to_read > 0 {
                     match socket.read(&mut read_info.reading_buffer[currently_read..]) {
                         Ok(0) => {
                             // Connection closed
-                            debug!("Connection closed while reading body bytes to read: {},  currently read: {}", bytes_to_read, currently_read);
+                            warn!("Connection closed while reading message module bytes to read: {},  currently read: {}", bytes_to_read, currently_read);
+
                             return Ok(ConnectionReadWork::ConnectionBroken);
                         }
                         Ok(n) => {
@@ -262,13 +272,25 @@ pub(crate) fn read_until_block(socket: &mut MioSocket, read_info: &mut ReadingBu
                     0
                 };
 
+                trace!("Read {} bytes from socket", read);
+
                 if read >= bytes_to_read {
-                    let (msg_mod, read): (MessageModule, _) = bincode::serde::decode_borrowed_from_slice(&read_info.reading_buffer[..], bincode::config::standard())?;
+
+                    //FIXME: FIX THIS RIGHT NOW
+                    let msg_mod = match read_info.reading_buffer[0] {
+                        0 => MessageModule::Reconfiguration,
+                        1 => MessageModule::Protocol,
+                        2 => MessageModule::StateProtocol,
+                        3 => MessageModule::Application,
+                        _ => unreachable!()
+                    };
+
+                    let msg_mod_size = size_of::<MessageModule>();
 
                     read_info.message_module = Some(msg_mod);
 
                     if read >= bytes_to_read {
-                        read_info.reading_buffer.advance(read);
+                        read_info.reading_buffer.advance(msg_mod_size);
                         read_info.read_bytes = read_info.reading_buffer.len();
                     } else {
                         read_info.reading_buffer.clear();
@@ -309,6 +331,8 @@ pub(crate) fn read_until_block(socket: &mut MioSocket, read_info: &mut ReadingBu
                 0
             };
 
+            trace!("Read {} bytes from socket", read);
+
             if read >= bytes_to_read {
                 let header = Header::deserialize_from(&read_info.reading_buffer[..Header::LENGTH])?;
 
@@ -327,8 +351,8 @@ pub(crate) fn read_until_block(socket: &mut MioSocket, read_info: &mut ReadingBu
                     read_info.read_bytes = 0;
                 }
 
-                read_info.reading_buffer.reserve(header.payload_length());
-                read_info.reading_buffer.resize(header.payload_length(), 0);
+                read_info.reading_buffer.reserve(size_of::<MessageModule>());
+                read_info.reading_buffer.resize(size_of::<MessageModule>(), 0);
             } else {
                 read_info.read_bytes += read;
             }
@@ -385,15 +409,15 @@ impl WritingBuffer {
 
         header.serialize_into(&mut header_bytes[..Header::LENGTH])?;
 
-        let header_bytes = header_bytes.freeze();
-
         let mut mod_bytes = BytesMut::with_capacity(size_of::<MessageModule>());
+
+        mod_bytes.resize(size_of::<MessageModule>(), 0);
 
         bincode::serde::encode_into_slice(&module, &mut mod_bytes, bincode::config::standard())?;
 
         Ok(Self {
             written_bytes: 0,
-            current_header: Some(header_bytes),
+            current_header: Some(header_bytes.freeze()),
             message_module: Some(mod_bytes.freeze()),
             current_message: payload,
         })

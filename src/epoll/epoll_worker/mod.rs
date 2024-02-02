@@ -101,7 +101,7 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
         })
     }
 
-    pub(super) fn epoll_worker_loop(mut self) -> io::Result<()> {
+    pub(super) fn epoll_worker_loop(mut self) -> atlas_common::error::Result<()> {
         let mut event_queue = Events::with_capacity(EVENT_CAPACITY);
 
         let my_id = self.global_conns.own_id();
@@ -117,7 +117,7 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
                     // *should* be handled by mio and return Ok() with no events
                     continue;
                 } else {
-                    return Err(e);
+                    return Err!(e);
                 }
             }
 
@@ -380,7 +380,7 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
     }
 
     /// Receive connections from the connection register and register them with the epoll instance
-    fn register_connections(&mut self) -> io::Result<()> {
+    fn register_connections(&mut self) -> atlas_common::error::Result<()> {
         loop {
             match self.conn_register.try_recv() {
                 Ok(message) => {
@@ -408,7 +408,7 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
         Ok(())
     }
 
-    fn create_connection(&mut self, conn: NewConnection<CN>) -> io::Result<()> {
+    fn create_connection(&mut self, conn: NewConnection<CN>) -> atlas_common::error::Result<()> {
         let NewConnection {
             conn_id, peer_id,
             my_id, mut socket,
@@ -440,14 +440,13 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
 
         entry.insert(socket_conn);
 
-        //TODO: Handle any errors from these calls
-        let _ = self.read_until_block(token);
-        let _ = self.try_write_until_block(token);
+        self.read_until_block(token)?;
+        self.try_write_until_block(token)?;
 
         Ok(())
     }
 
-    fn delete_connection(&mut self, token: Token, is_failure: bool) -> io::Result<()> {
+    fn delete_connection(&mut self, token: Token, is_failure: bool) -> atlas_common::error::Result<()> {
         if let Some(conn) = self.connections.try_remove(token.into()) {
             match conn {
                 SocketConnection::PeerConn {
