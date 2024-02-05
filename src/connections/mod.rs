@@ -44,6 +44,8 @@ pub struct Connections<NI, IS, CNP>
     group_worker_handle: EpollWorkerGroupHandle<IS>,
 
     conn_counts: ConnCounts,
+    #[get = "pub"]
+    loopback: IS,
 
     conn_handle: Arc<ConnectionHandler>,
 }
@@ -91,6 +93,8 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
         let server_conns = Arc::new(ServerRegisteredPendingConns::new());
 
         let registered_servers = RegisteredServers::init();
+
+        let loopback = stub_controller.get_stub_for(&own_id).expect("Failed to get loopback stub");
 
         Self {
             own_id,

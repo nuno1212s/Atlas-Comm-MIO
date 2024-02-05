@@ -54,13 +54,14 @@ enum PendingConnection {
         socket: MioSocket,
         read_buf: ReadingBuffer,
         write_buf: Option<WritingBuffer>,
+        /// The channel that can be used to push requests to this connected node (to be sent to them)
         channel: Option<(ChannelSyncTx<NetworkSerializedMessage>, ChannelSyncRx<NetworkSerializedMessage>)>,
     },
     Waker,
     ServerToken,
 }
 
-pub struct ServerWorker<NI, CN, CNP>
+pub struct ServerWorker<NI, IS, CNP>
     where NI: NetworkInformationProvider {
     my_id: NodeId,
     listener: MioListener,
@@ -68,7 +69,7 @@ pub struct ServerWorker<NI, CN, CNP>
     currently_accepting: Slab<PendingConnection>,
     conn_handler: Arc<ConnectionHandler>,
     network_info: Arc<NI>,
-    peer_conns: Arc<Connections<NI, CN, CNP>>,
+    peer_conns: Arc<Connections<NI, IS, CNP>>,
     network_message_rx: ChannelSyncRx<NetworkUpdate>,
     waker: Arc<Waker>,
     poll: Poll,
@@ -511,11 +512,6 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
                                                  (None means unknown) Pending conn handle has already been established", token, connection_peer_id, node_type);
 
                                             connection.fill_channel(conn.channel().clone());
-
-                                            for message in received {
-
-                                                // TODO: We have to push the messages directly here
-                                            }
                                         }
                                     }
                                 }
@@ -531,6 +527,12 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
                                     return Ok(ConnectionResult::Connected(connection_peer_id, conn.node_type, received));
                                 }
                             }
+                        }
+
+                        for message in received {
+
+                            self.peer_conns.loopback().handle_message(&self.network_info, message)?;
+
                         }
 
                         ConnectionResult::Working
@@ -660,7 +662,7 @@ impl ConnectionHandler {
 
                              match sock.write(&write_info.message_module().as_ref().unwrap()) {
                                 Ok(size) => {
-                                    warn!("{:?} // Wrote {:?} bytes", conn_handler.my_id(), size);
+                                    trace!("{:?} // Wrote {:?} bytes for message module while initializing connection", conn_handler.my_id(), size);
                                 }
                                 Err(err) =>{
                                     warn!("{:?} // Error while writing payload on connecting to {:?} addr {:?}: {:?}",

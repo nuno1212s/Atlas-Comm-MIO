@@ -18,6 +18,7 @@ use crate::connections::{ByteMessageSendStub, Connections};
 #[derive(Clone)]
 pub struct PendingConnHandle {
     id: NodeId,
+    /// The channel that can be used to push requests to this connected node (to be sent to them)
     channel: (ChannelSyncTx<NetworkSerializedMessage>, ChannelSyncRx<NetworkSerializedMessage>),
     /// A correct node is not going to connect to the 2 different servers at the same time,
     /// even if he does, we can just use one server's connection to send the reconfiguration messages,
