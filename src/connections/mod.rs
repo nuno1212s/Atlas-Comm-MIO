@@ -21,7 +21,6 @@ use atlas_communication::message::{NetworkSerializedMessage, WireMessage};
 use atlas_communication::reconfiguration::NetworkInformationProvider;
 use crate::conn_util::{ConnCounts, ReadingBuffer, WritingBuffer};
 use crate::connections::conn_establish::ConnectionHandler;
-use crate::connections::conn_establish::pending_conn::{RegisteredServers, ServerRegisteredPendingConns};
 use crate::epoll::{EpollWorkerGroupHandle, EpollWorkerId, NewConnection};
 
 pub const SEND_QUEUE_SIZE: usize = 1024;
@@ -33,8 +32,6 @@ pub struct Connections<NI, IS, CNP>
     #[get_copy = "pub"]
     own_id: NodeId,
 
-    server_conns: Arc<ServerRegisteredPendingConns>,
-    registered_servers: RegisteredServers,
     #[get = "pub(crate)"]
     stub_controller: CNP,
     registered_connections: DashMap<NodeId, Arc<PeerConn<IS>>>,
@@ -56,10 +53,6 @@ pub struct PeerConn<IS> {
     // The peer ID of the connected node
     #[get_copy = "pub(super)"]
     connected_peer_id: NodeId,
-    // Node type of the peer connection
-    #[get_copy = "pub(super)"]
-    node_type: NodeType,
-
     // The stub to propagate messages to the upper levels of the protocol
     #[get = "pub(super)"]
     byte_input_stub: IS,
@@ -90,38 +83,27 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
 
         let conn_handler = Arc::new(ConnectionHandler::initialize(own_id, conn_counts.clone()));
 
-        let server_conns = Arc::new(ServerRegisteredPendingConns::new());
-
-        let registered_servers = RegisteredServers::init();
-
         let loopback = stub_controller.get_stub_for(&own_id).expect("Failed to get loopback stub");
 
         Self {
             own_id,
-            server_conns,
-            registered_servers,
             stub_controller,
             registered_connections: Default::default(),
             network_info,
             group_worker_handle,
             conn_counts,
+            loopback,
             conn_handle: conn_handler,
         }
     }
 
     pub(super) fn setup_tcp_worker(self: &Arc<Self>, listener: SyncListener) {
-        let (tx, rx) = channel::new_bounded_sync(SEND_QUEUE_SIZE, Some("TCP Server Worker"));
-
-        self.registered_servers.register_server(tx);
-
         let _waker = conn_establish::initialize_server(
             self.own_id.clone(),
             listener,
             self.conn_handle.clone(),
-            self.server_conns.clone(),
             self.network_info.clone(),
             Arc::clone(self),
-            rx,
         );
     }
 
@@ -195,7 +177,7 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
         for _ in 0..connections {
             result_vec.push(
                 self.conn_handle
-                    .connect_to_node(Arc::clone(self), node, node_type.unwrap(), addr.clone()),
+                    .connect_to_node(Arc::clone(self), node, addr.clone()),
             )
         }
 
@@ -224,7 +206,7 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
     /// Register a connection without having to provide any sockets, as this is meant to be done
     /// preemptively so there is no possibility for the connection details to be lost due to
     /// multi threading non atomic shenanigans
-    fn preemptive_conn_register(self: &Arc<Self>, node: NodeId, node_type: NodeType, channel: (ChannelSyncTx<NetworkSerializedMessage>, ChannelSyncRx<NetworkSerializedMessage>))
+    fn preemptive_conn_register(self: &Arc<Self>, node: NodeId, channel: (ChannelSyncTx<NetworkSerializedMessage>, ChannelSyncRx<NetworkSerializedMessage>))
                                 -> atlas_common::error::Result<Arc<PeerConn<CN>>> {
         debug!("Preemptively registering connection to node {:?}", node);
 
@@ -235,9 +217,9 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
 
             let byte_stub = ByteMessageSendStub(channel.0.clone(), connections.clone());
 
-            let client_reception = self.stub_controller.generate_stub_for(node, node_type, byte_stub).expect("Failed to create reception client");
+            let client_reception = self.stub_controller.generate_stub_for(node, byte_stub).expect("Failed to create reception client");
 
-            Arc::new(PeerConn::init(node, node_type, client_reception, connections, channel))
+            Arc::new(PeerConn::init(node, client_reception, connections, channel))
         });
 
         Ok(conn.value().clone())
@@ -246,7 +228,6 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
     /// Handle a given socket having established the necessary connection
     fn handle_connection_established(self: &Arc<Self>, node: NodeId,
                                      socket: SecureSocket,
-                                     node_type: NodeType,
                                      reading_info: ReadingBuffer,
                                      writing_info: Option<WritingBuffer>,
                                      channel: (ChannelSyncTx<NetworkSerializedMessage>, ChannelSyncRx<NetworkSerializedMessage>)) {
@@ -258,21 +239,20 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
             _ => unreachable!(),
         };
 
-        self.handle_connection_established_with_socket(node, socket.into(), node_type, reading_info, writing_info, channel);
+        self.handle_connection_established_with_socket(node, socket.into(), reading_info, writing_info, channel);
     }
 
     fn handle_connection_established_with_socket(
         self: &Arc<Self>,
         node: NodeId,
         socket: MioSocket,
-        node_type: NodeType,
         reading_info: ReadingBuffer,
         writing_info: Option<WritingBuffer>,
         channel: (ChannelSyncTx<NetworkSerializedMessage>, ChannelSyncRx<NetworkSerializedMessage>),
     ) -> Arc<PeerConn<CN>> {
         info!(
-            "{:?} // Handling established connection to {:?} with node type: {:?}",
-            self.own_id, node, node_type
+            "{:?} // Handling established connection to {:?}",
+            self.own_id, node
         );
 
         let option = self.registered_connections.entry(node);
@@ -282,11 +262,10 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
 
             let byte_stub = ByteMessageSendStub(channel.0.clone(), connections.clone());
 
-            let reception_client = self.stub_controller.generate_stub_for(node, node_type, byte_stub).expect("Failed to create reception client");
+            let reception_client = self.stub_controller.generate_stub_for(node, byte_stub).expect("Failed to create reception client");
 
             let con = Arc::new(PeerConn::init(
                 node,
-                node_type,
                 reception_client,
                 connections,
                 channel,
@@ -369,13 +348,6 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
             let _ = self.internal_connect_to_node(node);
         }
     }
-    pub fn pending_server_connections(&self) -> &Arc<ServerRegisteredPendingConns> {
-        &self.server_conns
-    }
-
-    pub fn registered_servers(&self) -> &RegisteredServers {
-        &self.registered_servers
-    }
 }
 
 impl<NI, IS, CNP> NetworkConnectionController for Connections<NI, IS, CNP>
@@ -406,13 +378,11 @@ impl<NI, IS, CNP> NetworkConnectionController for Connections<NI, IS, CNP>
 
 impl<ST> PeerConn<ST> {
     pub fn init(connected_peer_id: NodeId,
-                node_type: NodeType,
                 byte_input_stub: ST,
                 connections: Arc<SkipMap<u32, Option<ConnHandle>>>,
                 channel: (ChannelSyncTx<NetworkSerializedMessage>, ChannelSyncRx<NetworkSerializedMessage>)) -> Self {
         Self {
             connected_peer_id,
-            node_type,
             byte_input_stub,
             conn_id_generator: Default::default(),
             connections,

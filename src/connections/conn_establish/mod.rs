@@ -1,9 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt::{Debug, Formatter};
-use std::fs::read;
 use std::io;
 use std::io::Write;
-use std::mem::size_of;
 use std::net::Shutdown;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -25,12 +23,10 @@ use atlas_communication::byte_stub::{ByteNetworkStub, NodeIncomingStub, NodeStub
 use atlas_communication::lookup_table::MessageModule;
 use atlas_communication::message::{Header, NetworkSerializedMessage, WireMessage};
 use atlas_communication::reconfiguration::{NetworkInformationProvider, NetworkUpdateMessage};
+
 use crate::conn_util;
 use crate::conn_util::{ConnCounts, ConnectionReadWork, ConnectionWriteWork, interrupted, ReadingBuffer, try_write_until_block, would_block, WritingBuffer};
-use crate::connections::conn_establish::pending_conn::{NetworkUpdate, PendingConnHandle, ServerRegisteredPendingConns};
 use crate::connections::{ByteMessageSendStub, Connections};
-
-pub mod pending_conn;
 
 const DEFAULT_ALLOWED_CONCURRENT_JOINS: usize = 128;
 // Since the tokens will always start at 0, we limit the amount of concurrent joins we can have
@@ -65,12 +61,10 @@ pub struct ServerWorker<NI, IS, CNP>
     where NI: NetworkInformationProvider {
     my_id: NodeId,
     listener: MioListener,
-    registered_conns: Arc<ServerRegisteredPendingConns>,
     currently_accepting: Slab<PendingConnection>,
     conn_handler: Arc<ConnectionHandler>,
     network_info: Arc<NI>,
     peer_conns: Arc<Connections<NI, IS, CNP>>,
-    network_message_rx: ChannelSyncRx<NetworkUpdate>,
     waker: Arc<Waker>,
     poll: Poll,
 
@@ -80,7 +74,7 @@ pub struct ServerWorker<NI, IS, CNP>
 
 #[derive(Debug, Clone)]
 enum ConnectionResult {
-    Connected(NodeId, NodeType, Vec<WireMessage>),
+    Connected(NodeId, Vec<WireMessage>),
     Working,
     ConnectionBroken,
 }
@@ -92,10 +86,8 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
     pub fn new(my_id: NodeId,
                mut listener: MioListener,
                conn_handler: Arc<ConnectionHandler>,
-               registered_conns: Arc<ServerRegisteredPendingConns>,
                network_info: Arc<NI>,
-               peer_conns: Arc<Connections<NI, CN, CNP>>,
-               network_message_rx: ChannelSyncRx<NetworkUpdate>) -> Result<Self> {
+               peer_conns: Arc<Connections<NI, CN, CNP>>) -> Result<Self> {
         let mut slab = Slab::with_capacity(DEFAULT_ALLOWED_CONCURRENT_JOINS);
 
         let mut poll = Poll::new()?;
@@ -127,12 +119,10 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
         Ok(Self {
             my_id,
             listener,
-            registered_conns,
             currently_accepting: slab,
             conn_handler,
             network_info,
             peer_conns,
-            network_message_rx,
             waker: Arc::new(waker),
             poll,
             waker_token,
@@ -145,8 +135,6 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
         let mut events = Events::with_capacity(DEFAULT_ALLOWED_CONCURRENT_JOINS);
 
         loop {
-            self.read_network_update_messages()?;
-
             self.poll.poll(&mut events, Some(Duration::from_millis(25)))?;
 
             for event in events.iter() {
@@ -221,48 +209,6 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
         Ok(())
     }
 
-    /// Read network update messages from the reconfiguration module
-    fn read_network_update_messages(&mut self) -> Result<()> {
-        match self.network_message_rx.try_recv() {
-            Ok(message) => {
-                let (conn_handle, update_message) = message.into_inner();
-
-                match update_message {
-                    NetworkUpdateMessage::NodeConnectionPermitted(node_id, node_type, pk) => {
-                        debug!("Received network update message for node {:?} with type {:?}. Moving connections to the final connection pool, {:?}", node_id, node_type,
-                    self.currently_accepting.iter().map(|(token, conn)| (Token(token), conn)).collect::<Vec<_>>());
-
-                        while let Some((position, _)) = self.currently_accepting.iter().find(|(token, pend)| {
-                            return match pend {
-                                PendingConnection::PendingConn { peer_id, .. } => {
-                                    if let Some(node) = peer_id {
-                                        if *node == node_id {
-                                            true
-                                        } else {
-                                            false
-                                        }
-                                    } else {
-                                        false
-                                    }
-                                }
-                                _ => false,
-                            };
-                        }) {
-                            let connection_result = ConnectionResult::Connected(node_id, node_type, Vec::new());
-
-                            self.handle_connection_result(Token(position), connection_result)?;
-                        }
-                    }
-                }
-            }
-            Err(_) => {
-                // Nothing to read
-            }
-        }
-
-        Ok(())
-    }
-
     fn handle_write_request(&mut self) -> io::Result<()> {
         let mut to_verify = Vec::with_capacity(self.currently_accepting.len());
 
@@ -281,7 +227,7 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
             let connection_result = self.try_write_until_block(token).expect("Failed to write");
 
             match &connection_result {
-                ConnectionResult::Connected(_, _, _) => {
+                ConnectionResult::Connected(_, _) => {
                     self.handle_connection_result(token, connection_result).expect("Failed to write");
                 }
                 _ => {}
@@ -294,8 +240,8 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
     /// Handle the result of a pending connection having been reached.
     fn handle_connection_result(&mut self, token: Token, result: ConnectionResult) -> Result<()> {
         match result {
-            ConnectionResult::Connected(node_id, node_type, pending_messages) => {
-                debug!("{:?} // Incoming connection to {:?} is now established with type {:?} with token {:?}, {:?}", self.my_id, node_id, node_type, token,
+            ConnectionResult::Connected(node_id, pending_messages) => {
+                debug!("{:?} // Incoming connection to {:?} is now established with token {:?}, {:?}", self.my_id, node_id, token,
                     self.currently_accepting.iter().map(|(token, conn)| (Token(token), conn)).collect::<Vec<_>>());
 
                 if let Some(mut connection) = self.currently_accepting.try_remove(token.into()) {
@@ -307,7 +253,6 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
 
                             let conn = self.peer_conns.handle_connection_established_with_socket(node_id.clone(),
                                                                                                  socket,
-                                                                                                 node_type,
                                                                                                  read_buf,
                                                                                                  write_buf,
                                                                                                  channel.unwrap_or_else(conn_util::initialize_send_channel));
@@ -353,7 +298,7 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
             let connection_result = self.handle_connection_readable(token)?;
 
             match &connection_result {
-                ConnectionResult::Connected(_, _, _) => {
+                ConnectionResult::Connected(_, _) => {
                     return Ok(connection_result);
                 }
                 ConnectionResult::ConnectionBroken => {
@@ -367,7 +312,7 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
             let connection_result = self.try_write_until_block(token)?;
 
             match &connection_result {
-                ConnectionResult::Connected(_, _, _) => {
+                ConnectionResult::Connected(_, _) => {
                     return Ok(connection_result);
                 }
                 ConnectionResult::ConnectionBroken => {
@@ -493,27 +438,9 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
                             // Check the general connections first as we add to this before removing from the pending connections
                             match self.peer_conns.get_connection(&connection_peer_id) {
                                 None => {
-                                    match self.registered_conns.get_pending_conn(&connection_peer_id) {
-                                        None => {
-                                            let node_type = self.peer_conns.network_info.get_node_type(&connection_peer_id);
+                                    debug!("Received connection ID for token {:?}, from {:?}", token, connection_peer_id,);
 
-                                            debug!("Received connection ID for token {:?}, from {:?}, node type is: {:?} (None means unknown)", token, connection_peer_id, node_type);
-
-                                            if let Some(node_type) = node_type {
-                                                return Ok(ConnectionResult::Connected(connection_peer_id, node_type, received));
-                                            } else {
-                                                let to_send = conn_util::initialize_send_channel();
-
-                                                self.registered_conns.insert_pending_connection(PendingConnHandle::new(peer_id.unwrap(), to_send, self.waker.clone()))
-                                            }
-                                        }
-                                        Some(conn) => {
-                                            trace!("Received connection ID for token {:?}, from {:?}, node type is: {:?}\
-                                                 (None means unknown) Pending conn handle has already been established", token, connection_peer_id, node_type);
-
-                                            connection.fill_channel(conn.channel().clone());
-                                        }
-                                    }
+                                    return Ok(ConnectionResult::Connected(connection_peer_id, received));
                                 }
                                 Some(conn) => {
                                     trace!("Received connection ID for token {:?}, from {:?}, node type is: {:?}\
@@ -524,15 +451,13 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
 
                                     connection.fill_channel(channel);
 
-                                    return Ok(ConnectionResult::Connected(connection_peer_id, conn.node_type, received));
+                                    return Ok(ConnectionResult::Connected(connection_peer_id, received));
                                 }
                             }
                         }
 
                         for message in received {
-
                             self.peer_conns.loopback().handle_message(&self.network_info, message)?;
-
                         }
 
                         ConnectionResult::Working
@@ -591,7 +516,7 @@ impl ConnectionHandler {
     }
 
     pub fn connect_to_node<NI, CN, CNP>(self: &Arc<Self>, connections: Arc<Connections<NI, CN, CNP>>,
-                                        peer_id: NodeId, peer_node_type: NodeType, addr: PeerAddr) -> OneShotRx<Result<()>>
+                                        peer_id: NodeId, addr: PeerAddr) -> OneShotRx<Result<()>>
         where
             NI: NetworkInformationProvider + 'static,
             CN: NodeIncomingStub + 'static,
@@ -660,17 +585,17 @@ impl ConnectionHandler {
                                 continue;
                             }
 
-                             match sock.write(&write_info.message_module().as_ref().unwrap()) {
+                            match sock.write(&write_info.message_module().as_ref().unwrap()) {
                                 Ok(size) => {
                                     trace!("{:?} // Wrote {:?} bytes for message module while initializing connection", conn_handler.my_id(), size);
                                 }
-                                Err(err) =>{
+                                Err(err) => {
                                     warn!("{:?} // Error while writing payload on connecting to {:?} addr {:?}: {:?}",
                                     conn_handler.my_id(), peer_id, addr, err);
 
                                     continue;
                                 }
-                             }
+                            }
 
                             if let Err(err) = sock.write_all(&write_info.current_message()) {
                                 warn!("{:?} // Error while writing payload on connecting to {:?} addr {:?}: {:?}",
@@ -692,7 +617,6 @@ impl ConnectionHandler {
                             info!("{:?} // Established connection to node {:?}", my_id, peer_id);
 
                             connections.handle_connection_established(peer_id, SecureSocket::Sync(sock),
-                                                                      peer_node_type,
                                                                       ReadingBuffer::init_with_size(Header::LENGTH),
                                                                       None,
                                                                       conn_util::initialize_send_channel());
@@ -732,20 +656,16 @@ impl ConnectionHandler {
 
 pub fn initialize_server<NI, CN, CNP>(my_id: NodeId, listener: SyncListener,
                                       connection_handler: Arc<ConnectionHandler>,
-                                      registered_conns: Arc<ServerRegisteredPendingConns>,
                                       network_info: Arc<NI>,
-                                      conns: Arc<Connections<NI, CN, CNP>>,
-                                      network_update_channel: ChannelSyncRx<NetworkUpdate>) -> Arc<Waker>
+                                      conns: Arc<Connections<NI, CN, CNP>>, ) -> Arc<Waker>
     where NI: NetworkInformationProvider + 'static,
           CN: NodeIncomingStub + 'static,
           CNP: NodeStubController<ByteMessageSendStub, CN> + 'static, {
     let server_worker = ServerWorker::new(my_id.clone(),
                                           listener.into(),
                                           connection_handler.clone(),
-                                          registered_conns,
                                           network_info,
-                                          conns,
-                                          network_update_channel).unwrap();
+                                          conns).unwrap();
 
     let waker = server_worker.waker.clone();
 
