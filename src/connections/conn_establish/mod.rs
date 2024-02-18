@@ -5,6 +5,7 @@ use std::io::Write;
 use std::net::Shutdown;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use anyhow::anyhow;
 
 use bytes::{Bytes, BytesMut};
 use log::{debug, error, info, trace, warn};
@@ -22,7 +23,7 @@ use atlas_common::socket::{MioListener, MioSocket, SecureSocket, SecureSocketSyn
 use atlas_communication::byte_stub::{ByteNetworkStub, NodeIncomingStub, NodeStubController};
 use atlas_communication::lookup_table::MessageModule;
 use atlas_communication::message::{Header, NetworkSerializedMessage, WireMessage};
-use atlas_communication::reconfiguration::{NetworkInformationProvider, NetworkUpdateMessage};
+use atlas_communication::reconfiguration::{NetworkInformationProvider, NetworkUpdateMessage, NodeInfo};
 
 use crate::conn_util;
 use crate::conn_util::{ConnCounts, ConnectionReadWork, ConnectionWriteWork, interrupted, ReadingBuffer, try_write_until_block, would_block, WritingBuffer};
@@ -176,7 +177,7 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
 
                     read_buffer.resize(Header::LENGTH, 0);
 
-                    let currently_accept = self.currently_accepting.insert(PendingConnection::from_socket(MioSocket::from(socket)));
+                    let currently_accept = self.currently_accepting.insert(MioSocket::from(socket).into());
 
                     let token = Token(currently_accept);
 
@@ -240,7 +241,20 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
     /// Handle the result of a pending connection having been reached.
     fn handle_connection_result(&mut self, token: Token, result: ConnectionResult) -> Result<()> {
         match result {
-            ConnectionResult::Connected(node_id, pending_messages) => {
+            ConnectionResult::Connected(node_id, mut pending_messages) => {
+                let node = if let Some(first_msg) = pending_messages.pop() {
+                    let node_info = first_msg.payload_buf();
+
+                    let (node_info, read): (NodeInfo, usize) = bincode::serde::decode_from_slice(node_info.as_ref(), bincode::config::standard())?;
+
+                    node_info
+                } else {
+
+                    error!("{:?} // Received connection from {:?} but no node info was received", self.my_id, node_id);
+
+                    return Err(anyhow!("Received connection from {:?} but no node info was received", node_id));
+                };
+
                 debug!("{:?} // Incoming connection to {:?} is now established with token {:?}, {:?}", self.my_id, node_id, token,
                     self.currently_accepting.iter().map(|(token, conn)| (Token(token), conn)).collect::<Vec<_>>());
 
@@ -251,13 +265,11 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
                             // the ones that should handle this connection
                             self.poll.registry().deregister(&mut socket)?;
 
-                            let conn = self.peer_conns.handle_connection_established_with_socket(node_id.clone(),
+                            let conn = self.peer_conns.handle_connection_established_with_socket(node,
                                                                                                  socket,
                                                                                                  read_buf,
                                                                                                  write_buf,
-                                                                                                 channel.unwrap_or_else(conn_util::initialize_send_channel));
-
-
+                                                                                                 channel.unwrap_or_else(conn_util::initialize_send_channel))?;
                             // We have identified the peer and should now handle the connection
                             for message in pending_messages {
                                 if message.header().payload_length() > 0 {
@@ -438,7 +450,7 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
                             // Check the general connections first as we add to this before removing from the pending connections
                             match self.peer_conns.get_connection(&connection_peer_id) {
                                 None => {
-                                    debug!("Received connection ID for token {:?}, from {:?}", token, connection_peer_id,);
+                                    debug!("Received connection ID for token {:?}, from {:?}. No existing connection has been found, initializing.", token, connection_peer_id,);
 
                                     return Ok(ConnectionResult::Connected(connection_peer_id, received));
                                 }
@@ -493,7 +505,9 @@ impl ConnectionHandler {
 
         *value += 1;
 
-        if *value > self.concurrent_conn.get_connections_to_node(self.my_id(), peer_id, network_info) * 2 {
+        let other_node_type = network_info.get_node_info(&peer_id).map(|info| info.node_type()).expect("Failed to get node type");
+
+        if *value > self.concurrent_conn.get_connections_to_node(network_info.own_node_info().node_type(), other_node_type) * 2 {
             *value -= 1;
 
             false
@@ -516,7 +530,7 @@ impl ConnectionHandler {
     }
 
     pub fn connect_to_node<NI, CN, CNP>(self: &Arc<Self>, connections: Arc<Connections<NI, CN, CNP>>,
-                                        peer_id: NodeId, addr: PeerAddr) -> OneShotRx<Result<()>>
+                                        peer_id: NodeId, addr: PeerAddr) -> std::result::Result<OneShotRx<Result<()>>, ConnectionEstablishError>
         where
             NI: NetworkInformationProvider + 'static,
             CN: NodeIncomingStub + 'static,
@@ -531,10 +545,11 @@ impl ConnectionHandler {
             warn!("{:?} // Tried to connect to node that I'm already connecting to {:?}",
                 conn_handler.my_id(), peer_id);
 
-            let _ = tx.send(Err!(ConnectionEstablishError::AlreadyConnectingToNode(peer_id)));
-
-            return rx;
+            return Err!(ConnectionEstablishError::AlreadyConnectingToNode(peer_id));
         }
+
+        let own_info = connections.network_info().own_node_info().clone();
+        let other_node_info = connections.network_info().get_node_info(&peer_id).expect("Failed to get node info");
 
         std::thread::Builder::new()
             .name(format!("Connecting to Node {:?}", peer_id))
@@ -568,12 +583,13 @@ impl ConnectionHandler {
 
                     match socket::connect_sync(addr.0) {
                         Ok(mut sock) => {
+                            let info = quiet_unwrap!(bincode::serde::encode_to_vec(&own_info, bincode::config::standard()));
 
                             // create header
                             let wm =
                                 WireMessage::new(my_id, peer_id,
                                                  MessageModule::Reconfiguration,
-                                                 Bytes::new(), nonce,
+                                                 Bytes::from(info), nonce,
                                                  None, None);
 
                             let write_info = WritingBuffer::init_from_message(wm).unwrap();
@@ -616,10 +632,15 @@ impl ConnectionHandler {
 
                             info!("{:?} // Established connection to node {:?}", my_id, peer_id);
 
-                            connections.handle_connection_established(peer_id, SecureSocket::Sync(sock),
-                                                                      ReadingBuffer::init_with_size(Header::LENGTH),
-                                                                      None,
-                                                                      conn_util::initialize_send_channel());
+                            let err = connections.handle_connection_established(other_node_info, SecureSocket::Sync(sock),
+                                                                                    ReadingBuffer::init_with_size(Header::LENGTH),
+                                                                                    None);
+
+                            if err.is_err() {
+                                let _ = tx.send(err);
+
+                                return;
+                            }
 
                             conn_handler.done_connecting_to_node(&peer_id);
 
@@ -646,7 +667,7 @@ impl ConnectionHandler {
                 let _ = tx.send(Err!(ConnectionEstablishError::FailedToConnectToNode(peer_id)));
             }).expect("Failed to allocate thread to establish connection");
 
-        rx
+        Ok(rx)
     }
 
     pub fn my_id(&self) -> NodeId {
@@ -684,7 +705,19 @@ pub fn initialize_server<NI, CN, CNP>(my_id: NodeId, listener: SyncListener,
 }
 
 impl PendingConnection {
-    pub fn from_socket(socket: MioSocket) -> Self {
+
+    fn fill_channel(&mut self, ch: (ChannelSyncTx<NetworkSerializedMessage>, ChannelSyncRx<NetworkSerializedMessage>)) {
+        match self {
+            PendingConnection::PendingConn { channel, .. } => {
+                *channel = Some(ch);
+            }
+            _ => unreachable!()
+        }
+    }
+}
+
+impl From<MioSocket> for PendingConnection {
+    fn from(socket: MioSocket) -> Self {
         let read_buf = ReadingBuffer::init_with_size(Header::LENGTH);
 
         Self::PendingConn {
@@ -694,15 +727,6 @@ impl PendingConnection {
             read_buf,
             write_buf: None,
             channel: None,
-        }
-    }
-
-    fn fill_channel(&mut self, ch: (ChannelSyncTx<NetworkSerializedMessage>, ChannelSyncRx<NetworkSerializedMessage>)) {
-        match self {
-            PendingConnection::PendingConn { channel, .. } => {
-                *channel = Some(ch);
-            }
-            _ => unreachable!()
         }
     }
 }

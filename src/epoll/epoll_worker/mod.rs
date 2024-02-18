@@ -4,7 +4,7 @@ use std::net::Shutdown;
 use std::sync::Arc;
 use std::time::Duration;
 use anyhow::Context;
-use log::{error, info, trace};
+use log::{debug, error, info, trace};
 use mio::{Events, Interest, Poll, Token, Waker};
 use mio::event::Event;
 use slab::Slab;
@@ -439,6 +439,8 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
         };
 
         entry.insert(socket_conn);
+
+        debug!("{:?} // Registered new connection {:?} to node {:?} in epoll worker {:?}", self.global_conns.own_id(), token, peer_id, self.worker_id);
 
         self.read_until_block(token)?;
         self.try_write_until_block(token)?;

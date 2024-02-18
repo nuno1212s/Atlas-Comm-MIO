@@ -10,7 +10,7 @@ use atlas_common::node_id::{NodeId, NodeType};
 use atlas_common::socket::MioSocket;
 use atlas_communication::lookup_table::MessageModule;
 use atlas_communication::message::{Header, WireMessage};
-use atlas_communication::reconfiguration::NetworkInformationProvider;
+use atlas_communication::reconfiguration::{NetworkInformationProvider, NodeInfo};
 use crate::config::TcpConfig;
 
 pub type Callback = Option<Box<dyn FnOnce(bool) -> () + Send>>;
@@ -32,13 +32,8 @@ impl ConnCounts {
     }
 
     /// How many connections should we maintain with a given node
-    pub(crate) fn get_connections_to_node<NI>(&self, my_id: NodeId, other_id: NodeId, info_provider: &NI) -> usize
-        where NI: NetworkInformationProvider {
-        let node_type = info_provider.get_own_node_type();
-
-        let other_node_type = info_provider.get_node_type(&other_id).unwrap();
-
-        return match (node_type, other_node_type) {
+    pub(crate) fn get_connections_to_node(&self, my_type: NodeType, other_type: NodeType) -> usize {
+        return match (my_type, other_type) {
             (NodeType::Replica, NodeType::Replica) => self.replica_connections,
             _ => self.client_connections
         };

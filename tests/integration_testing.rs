@@ -26,6 +26,9 @@ use atlas_communication::reconfiguration::NetworkInformationProvider;
 
 #[derive(Clone, Getters)]
 struct MockStubController {
+    #[get = "pub"]
+    node_id: NodeId,
+
     stubs: Arc<Mutex<BTreeMap<NodeId, MockStub>>>,
     /// Channel to push received messages from the byte network layer
     input_tx: ChannelSyncTx<WireMessage>,
@@ -53,7 +56,21 @@ impl NodeIncomingStub for MockStubInput {
 
 
 impl MockStubController {
-    fn generate_stub_for(&self, node: NodeId, node_type: NodeType) -> MockStubInput {
+    fn new(node_id: NodeId) -> Self {
+        let (tx, rx) = channel::new_bounded_sync(32, Some("MockStubController"));
+        let stubs = Arc::new(Mutex::new(Default::default()));
+
+        let controller = Self {
+            node_id,
+            stubs,
+            input_tx: tx,
+            input_rx: rx,
+        };
+
+        controller
+    }
+
+    fn create_stub_for(&self, node: NodeId) -> MockStubInput {
         let tx = self.input_tx.clone();
         let stub = MockStubInput(node, tx);
         stub
@@ -65,12 +82,13 @@ impl MockStubController {
 }
 
 impl NodeStubController<ByteStubType, MockStubInput> for MockStubController {
+
     fn has_stub_for(&self, node: &NodeId) -> bool {
         self.stubs.lock().unwrap().contains_key(node)
     }
 
-    fn generate_stub_for(&self, node: NodeId, node_type: NodeType, byte_stub: ByteStubType) -> Result<MockStubInput> {
-        let input_stub = self.generate_stub_for(node, node_type);
+    fn generate_stub_for(&self, node: NodeId, byte_stub: ByteStubType) -> Result<MockStubInput> {
+        let input_stub = self.create_stub_for(node);
 
         let output_stub = MockStubOutput(node, byte_stub);
 
@@ -82,6 +100,10 @@ impl NodeStubController<ByteStubType, MockStubInput> for MockStubController {
     }
 
     fn get_stub_for(&self, node: &NodeId) -> Option<MockStubInput> {
+        if self.node_id == *node {
+            return Some(MockStubInput(node.clone(), self.input_tx.clone()));
+        }
+
         self.stubs.lock().unwrap().get(node).map(|stub| stub.0.clone())
     }
 
@@ -90,16 +112,6 @@ impl NodeStubController<ByteStubType, MockStubInput> for MockStubController {
     }
 }
 
-impl Default for MockStubController {
-    fn default() -> Self {
-        let (tx, rx) = channel::new_bounded_sync(32, Some("MockStubController"));
-        Self {
-            stubs: Arc::new(Mutex::new(Default::default())),
-            input_tx: tx,
-            input_rx: rx,
-        }
-    }
-}
 
 #[inline]
 fn read_private_keys_from_file(mut file: BufReader<File>) -> Result<Vec<PrivateKeyDer<'static>>> {
@@ -326,9 +338,9 @@ mod conn_test {
 
             let network_info = factory.generate_network_info_for(node)?;
 
-            let mock_stub_controller = MockStubController::default();
+            let mock_stub_controller = MockStubController::new(node);
 
-            let nt_node = MIOTCPNode::initialize_controller(reconf.clone(), Arc::new(network_info), default_config(node.0)?, mock_stub_controller)?;
+            let nt_node = MIOTCPNode::initialize_controller(Arc::new(network_info), default_config(node.0)?, mock_stub_controller)?;
 
             nodes.insert(node, nt_node);
         }

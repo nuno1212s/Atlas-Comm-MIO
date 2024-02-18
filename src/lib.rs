@@ -82,11 +82,9 @@ impl<NI, IS, CNP> ByteNetworkControllerInit<NI, CNP, ByteMessageSendStub, IS> fo
 
         initialize_worker_group(connections.clone(), receivers)?;
 
-        let addr = network_info.get_own_addr();
-
-        let id = network_info.get_own_id();
-
-        let listener = Self::setup_connection(&id, addr.socket())?;
+        let node_info = network_info.own_node_info();
+        
+        let listener = Self::setup_connection(&node_info.node_id(), node_info.addr().socket())?;
 
         connections.setup_tcp_worker(listener);
 

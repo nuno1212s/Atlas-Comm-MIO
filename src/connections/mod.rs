@@ -3,9 +3,11 @@ pub(crate) mod conn_establish;
 use std::net::Shutdown;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use crossbeam_skiplist::SkipMap;
 use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
+use dashmap::mapref::one::Ref;
 use getset::{CopyGetters, Getters};
 use log::{debug, error, info, warn};
 use mio::{Token, Waker};
@@ -18,9 +20,10 @@ use atlas_communication::byte_stub;
 use atlas_communication::byte_stub::{ByteNetworkController, NodeIncomingStub, NodeStubController};
 use atlas_communication::byte_stub::connections::NetworkConnectionController;
 use atlas_communication::message::{NetworkSerializedMessage, WireMessage};
-use atlas_communication::reconfiguration::NetworkInformationProvider;
+use atlas_communication::reconfiguration::{NetworkInformationProvider, NodeInfo};
+use crate::conn_util;
 use crate::conn_util::{ConnCounts, ReadingBuffer, WritingBuffer};
-use crate::connections::conn_establish::ConnectionHandler;
+use crate::connections::conn_establish::{ConnectionEstablishError, ConnectionHandler};
 use crate::epoll::{EpollWorkerGroupHandle, EpollWorkerId, NewConnection};
 
 pub const SEND_QUEUE_SIZE: usize = 1024;
@@ -79,7 +82,7 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
         conn_counts: ConnCounts,
         stub_controller: CNP,
     ) -> Self {
-        let own_id = network_info.get_own_id();
+        let own_id = network_info.own_node_info().node_id();
 
         let conn_handler = Arc::new(ConnectionHandler::initialize(own_id, conn_counts.clone()));
 
@@ -130,31 +133,23 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
     fn internal_connect_to_node(
         self: &Arc<Self>,
         node: NodeId,
-    ) -> Vec<OneShotRx<atlas_common::error::Result<()>>> {
+    ) -> Result<Vec<OneShotRx<atlas_common::error::Result<()>>>, ConnectionError> {
         if node == self.own_id {
-            warn!("Attempted to connect to myself");
-
-            return vec![];
+            return Err!(ConnectionError::ConnectToSelf);
         }
-        let addr = self.network_info.get_addr_for_node(&node);
-        let node_type = self.network_info.get_node_type(&node);
 
-        if addr.is_none() || node_type.is_none() {
-            error!("No address found for node {:?}", node);
+        let node_info = self.network_info.get_node_info(&node);
 
-            return vec![];
+        let node_info = if node_info.is_none() {
+            return Err!(ConnectionError::NodeInfoNotFound(node));
         } else {
-            match (self.network_info.get_own_node_type(), node_type.unwrap()) {
+            match (self.network_info.own_node_info().node_type(), node_info.clone().unwrap().node_type()) {
                 (NodeType::Client, NodeType::Client) => {
-                    warn!("Attempted to connect to another client");
-
-                    return vec![];
+                    return Err!(ConnectionError::ClientCannotConnectToClient(node));
                 }
-                _ => {}
+                _ => node_info.unwrap(),
             }
-        }
-
-        let addr = addr.unwrap();
+        };
 
         let current_connections = self
             .registered_connections
@@ -162,14 +157,14 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
             .map(|entry| entry.value().concurrent_connection_count())
             .unwrap_or(0);
 
-        let connections = self
+        let target_connections = self
             .conn_counts
-            .get_connections_to_node(self.own_id, node, &*self.network_info);
+            .get_connections_to_node(self.network_info.own_node_info().node_type(), node_info.node_type());
 
-        let connections = if current_connections > connections {
+        let connections = if current_connections > target_connections {
             0
         } else {
-            connections - current_connections
+            target_connections - current_connections
         };
 
         let mut result_vec = Vec::with_capacity(connections);
@@ -177,15 +172,17 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
         for _ in 0..connections {
             result_vec.push(
                 self.conn_handle
-                    .connect_to_node(Arc::clone(self), node, addr.clone()),
+                    .connect_to_node(Arc::clone(self), node, node_info.addr().clone())?,
             )
         }
 
-        result_vec
+        Ok(result_vec)
     }
 
     fn dc_from_node(&self, node: &NodeId) -> atlas_common::error::Result<()> {
         let existing_connection = self.registered_connections.remove(node);
+
+        self.stub_controller.shutdown_stubs_for(node);
 
         if let Some((node, connection)) = existing_connection {
             for entry in connection.connections.iter() {
@@ -226,11 +223,10 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
     }
 
     /// Handle a given socket having established the necessary connection
-    fn handle_connection_established(self: &Arc<Self>, node: NodeId,
+    fn handle_connection_established(self: &Arc<Self>, node: NodeInfo,
                                      socket: SecureSocket,
                                      reading_info: ReadingBuffer,
-                                     writing_info: Option<WritingBuffer>,
-                                     channel: (ChannelSyncTx<NetworkSerializedMessage>, ChannelSyncRx<NetworkSerializedMessage>)) {
+                                     writing_info: Option<WritingBuffer>) -> atlas_common::error::Result<()> {
         let socket = match socket {
             SecureSocket::Sync(sync) => match sync {
                 SecureSocketSync::Plain(socket) => socket,
@@ -239,49 +235,73 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
             _ => unreachable!(),
         };
 
-        self.handle_connection_established_with_socket(node, socket.into(), reading_info, writing_info, channel);
+        match self.registered_connections.get(&node.node_id()) {
+            None => {
+                self.handle_connection_established_with_socket(node, socket.into(), reading_info, writing_info, conn_util::initialize_send_channel())?;
+            }
+            Some(conn) => {
+                self.handle_connection_established_with_socket(node, socket.into(), reading_info, writing_info, conn.to_send.clone())?;
+            }
+        }
+
+        Ok(())
     }
 
     fn handle_connection_established_with_socket(
         self: &Arc<Self>,
-        node: NodeId,
+        node: NodeInfo,
         socket: MioSocket,
         reading_info: ReadingBuffer,
         writing_info: Option<WritingBuffer>,
         channel: (ChannelSyncTx<NetworkSerializedMessage>, ChannelSyncRx<NetworkSerializedMessage>),
-    ) -> Arc<PeerConn<CN>> {
+    ) -> atlas_common::error::Result<Arc<PeerConn<CN>>> {
         info!(
             "{:?} // Handling established connection to {:?}",
             self.own_id, node
         );
 
-        let option = self.registered_connections.entry(node);
+        let option = self.registered_connections.entry(node.node_id());
 
-        let peer_conn = option.or_insert_with(move || {
-            let connections = Arc::new(SkipMap::new());
+        let other_node = node.clone();
 
-            let byte_stub = ByteMessageSendStub(channel.0.clone(), connections.clone());
+        let peer_conn = match option {
+            Entry::Occupied(conn) => {
+                conn.get().clone()
+            }
+            Entry::Vacant(vacant) => {
 
-            let reception_client = self.stub_controller.generate_stub_for(node, byte_stub).expect("Failed to create reception client");
+                let connections = Arc::new(SkipMap::new());
 
-            let con = Arc::new(PeerConn::init(
-                node,
-                reception_client,
-                connections,
-                channel,
-            ));
+                let stub = self.stub_controller.get_stub_for(&node.node_id());
 
-            debug!(
-                "{:?} // Creating new peer connection to {:?}.",
-                self.own_id,
-                node,
-            );
+                let stub = match stub {
+                    None => {
+                        let byte_stub = ByteMessageSendStub(channel.0.clone(), connections.clone());
 
-            con
-        });
+                        self.stub_controller.generate_stub_for(node.node_id(), byte_stub)?
+                    }
+                    Some(_) => {
+                        unreachable!("We should never have a stub for a node that we don't have a connection to")
+                    }
+                };
+
+                let con = Arc::new(PeerConn::init(
+                    other_node.node_id(),
+                    stub,
+                    connections,
+                    channel,
+                ));
+
+                debug!("{:?} // Creating new peer connection to {:?}.", self.own_id,other_node,);
+
+                vacant.insert(con.clone());
+
+                con
+            }
+        };
 
         let concurrency_level = self.conn_counts
-            .get_connections_to_node(self.own_id, node, &*self.network_info);
+            .get_connections_to_node(self.network_info.own_node_info().node_type(), node.node_type());
 
         let conn_id = peer_conn.gen_conn_id();
 
@@ -301,7 +321,7 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
                 );
             }
 
-            return peer_conn.value().clone();
+            return Ok(peer_conn.clone());
         }
 
         debug!(
@@ -313,16 +333,15 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
         peer_conn.register_peer_conn_intent(conn_id);
 
         let conn_details =
-            NewConnection::new(conn_id, node, self.own_id, socket, reading_info, writing_info, peer_conn.value().clone());
+            NewConnection::new(conn_id, node.node_id(), self.own_id, socket, reading_info, writing_info, peer_conn.clone());
 
         // We don't register the connection here as we still need some information that will only be provided
         // to us by the worker that will handle the connection.
         // Therefore, the connection will be registered in the worker itself.
         self.group_worker_handle
-            .assign_socket_to_worker(conn_details)
-            .expect("Failed to assign socket to worker?");
+            .assign_socket_to_worker(conn_details)?;
 
-        return peer_conn.value().clone();
+        return Ok(peer_conn.clone());
     }
 
     /// Handle a connection having broken and being removed from the worker
@@ -366,8 +385,10 @@ impl<NI, IS, CNP> NetworkConnectionController for Connections<NI, IS, CNP>
         self.connected_nodes()
     }
 
-    fn connect_to_node(self: &Arc<Self>, node: NodeId) -> Vec<OneShotRx<atlas_common::error::Result<()>>> {
-        self.internal_connect_to_node(node)
+    fn connect_to_node(self: &Arc<Self>, node: NodeId) -> atlas_common::error::Result<Vec<OneShotRx<atlas_common::error::Result<()>>>> {
+        let conn_results = self.internal_connect_to_node(node)?;
+
+        Ok(conn_results)
     }
 
     fn disconnect_from_node(self: &Arc<Self>, node: &NodeId) -> atlas_common::error::Result<()> {
@@ -457,13 +478,13 @@ pub struct ByteMessageSendStub(ChannelSyncTx<WireMessage>, Arc<SkipMap<u32, Opti
 
 impl byte_stub::ByteNetworkStub for ByteMessageSendStub {
     fn dispatch_message(&self, message: WireMessage) -> atlas_common::error::Result<()> {
-        self.0.send(message)?;
+        self.0.send(message).context("Failed to send to channel")?;
 
-        self.1.iter().for_each(|entry| {
+        for entry in self.1.iter() {
             if let Some(conn) = entry.value() {
-                conn.waker.wake().expect("Failed to wake connection");
+                conn.waker.wake().context("Failed to wake worker")?;
             }
-        });
+        }
 
         Ok(())
     }
@@ -505,4 +526,16 @@ impl ConnHandle {
 pub enum MioError {
     #[error("Failed to retrieve message from the send queue")]
     FailedToRetrieveFromSendQueue
+}
+
+#[derive(Error, Debug)]
+pub enum ConnectionError {
+    #[error("Cannot connect to ourselves")]
+    ConnectToSelf,
+    #[error("Node info for node {0:?} is not found")]
+    NodeInfoNotFound(NodeId),
+    #[error("Failed to connect to node {0:?} as we are both clients")]
+    ClientCannotConnectToClient(NodeId),
+    #[error("Failed to connect to node due to internal error {0:?}")]
+    InternalConnectionError(#[from] ConnectionEstablishError),
 }
