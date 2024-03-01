@@ -235,14 +235,18 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
             _ => unreachable!(),
         };
 
-        match self.registered_connections.get(&node.node_id()) {
-            None => {
-                self.handle_connection_established_with_socket(node, socket.into(), reading_info, writing_info, conn_util::initialize_send_channel())?;
-            }
-            Some(conn) => {
-                self.handle_connection_established_with_socket(node, socket.into(), reading_info, writing_info, conn.to_send.clone())?;
-            }
-        }
+        let to_send_channel =
+            match self.registered_connections.get(&node.node_id()) {
+                None => {
+                    conn_util::initialize_send_channel()
+                }
+                Some(conn) => {
+                    conn.to_send.clone()
+                }
+            };
+
+        // Cannot call this function while holding a reference to the registered connections map
+        self.handle_connection_established_with_socket(node, socket.into(), reading_info, writing_info, to_send_channel)?;
 
         Ok(())
     }
@@ -260,16 +264,13 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
             self.own_id, node
         );
 
-        let option = self.registered_connections.entry(node.node_id());
-
         let other_node = node.clone();
 
-        let peer_conn = match option {
+        let peer_conn = match self.registered_connections.entry(node.node_id()) {
             Entry::Occupied(conn) => {
                 conn.get().clone()
             }
             Entry::Vacant(vacant) => {
-
                 let connections = Arc::new(SkipMap::new());
 
                 let stub = self.stub_controller.get_stub_for(&node.node_id());
