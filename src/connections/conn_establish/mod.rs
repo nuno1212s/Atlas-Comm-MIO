@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use std::collections::BTreeMap;
 use std::fmt::{Debug, Formatter};
 use std::io;
@@ -5,28 +6,32 @@ use std::io::Write;
 use std::net::Shutdown;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use anyhow::anyhow;
 
 use bytes::{Bytes, BytesMut};
 use log::{debug, error, info, trace, warn};
-use mio::{Events, Interest, Poll, Token, Waker};
 use mio::event::Event;
+use mio::{Events, Interest, Poll, Token, Waker};
 use slab::Slab;
 use thiserror::Error;
 
-use atlas_common::{channel, Err, prng, quiet_unwrap, socket};
 use atlas_common::channel::{ChannelSyncRx, ChannelSyncTx, OneShotRx};
 use atlas_common::error::*;
 use atlas_common::node_id::{NodeId, NodeType};
 use atlas_common::peer_addr::PeerAddr;
 use atlas_common::socket::{MioListener, MioSocket, SecureSocket, SecureSocketSync, SyncListener};
+use atlas_common::{channel, prng, quiet_unwrap, socket, Err};
 use atlas_communication::byte_stub::{ByteNetworkStub, NodeIncomingStub, NodeStubController};
 use atlas_communication::lookup_table::MessageModule;
 use atlas_communication::message::{Header, NetworkSerializedMessage, WireMessage};
-use atlas_communication::reconfiguration::{NetworkInformationProvider, NetworkUpdateMessage, NodeInfo};
+use atlas_communication::reconfiguration::{
+    NetworkInformationProvider, NetworkUpdateMessage, NodeInfo,
+};
 
 use crate::conn_util;
-use crate::conn_util::{ConnCounts, ConnectionReadWork, ConnectionWriteWork, interrupted, ReadingBuffer, try_write_until_block, would_block, WritingBuffer};
+use crate::conn_util::{
+    interrupted, try_write_until_block, would_block, ConnCounts, ConnectionReadWork,
+    ConnectionWriteWork, ReadingBuffer, WritingBuffer,
+};
 use crate::connections::{ByteMessageSendStub, Connections};
 
 const DEFAULT_ALLOWED_CONCURRENT_JOINS: usize = 128;
@@ -52,14 +57,19 @@ enum PendingConnection {
         read_buf: ReadingBuffer,
         write_buf: Option<WritingBuffer>,
         /// The channel that can be used to push requests to this connected node (to be sent to them)
-        channel: Option<(ChannelSyncTx<NetworkSerializedMessage>, ChannelSyncRx<NetworkSerializedMessage>)>,
+        channel: Option<(
+            ChannelSyncTx<NetworkSerializedMessage>,
+            ChannelSyncRx<NetworkSerializedMessage>,
+        )>,
     },
     Waker,
     ServerToken,
 }
 
 pub struct ServerWorker<NI, IS, CNP>
-    where NI: NetworkInformationProvider {
+where
+    NI: NetworkInformationProvider,
+{
     my_id: NodeId,
     listener: MioListener,
     currently_accepting: Slab<PendingConnection>,
@@ -81,14 +91,18 @@ enum ConnectionResult {
 }
 
 impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
-    where NI: NetworkInformationProvider + 'static,
-          CN: NodeIncomingStub + 'static,
-          CNP: NodeStubController<ByteMessageSendStub, CN> + 'static {
-    pub fn new(my_id: NodeId,
-               mut listener: MioListener,
-               conn_handler: Arc<ConnectionHandler>,
-               network_info: Arc<NI>,
-               peer_conns: Arc<Connections<NI, CN, CNP>>) -> Result<Self> {
+where
+    NI: NetworkInformationProvider + 'static,
+    CN: NodeIncomingStub + 'static,
+    CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
+{
+    pub fn new(
+        my_id: NodeId,
+        mut listener: MioListener,
+        conn_handler: Arc<ConnectionHandler>,
+        network_info: Arc<NI>,
+        peer_conns: Arc<Connections<NI, CN, CNP>>,
+    ) -> Result<Self> {
         let mut slab = Slab::with_capacity(DEFAULT_ALLOWED_CONCURRENT_JOINS);
 
         let mut poll = Poll::new()?;
@@ -110,7 +124,8 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
 
             let listener_token = Token(entry.key());
 
-            poll.registry().register(&mut listener, listener_token, Interest::READABLE)?;
+            poll.registry()
+                .register(&mut listener, listener_token, Interest::READABLE)?;
 
             entry.insert(PendingConnection::ServerToken);
 
@@ -136,7 +151,8 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
         let mut events = Events::with_capacity(DEFAULT_ALLOWED_CONCURRENT_JOINS);
 
         loop {
-            self.poll.poll(&mut events, Some(Duration::from_millis(25)))?;
+            self.poll
+                .poll(&mut events, Some(Duration::from_millis(25)))?;
 
             for event in events.iter() {
                 match event.token() {
@@ -177,7 +193,9 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
 
                     read_buffer.resize(Header::LENGTH, 0);
 
-                    let currently_accept = self.currently_accepting.insert(MioSocket::from(socket).into());
+                    let currently_accept = self
+                        .currently_accepting
+                        .insert(MioSocket::from(socket).into());
 
                     let token = Token(currently_accept);
 
@@ -185,14 +203,19 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
 
                     match connection {
                         PendingConnection::PendingConn { socket, .. } => {
-                            self.poll.registry().register(socket, token, Interest::READABLE)?;
+                            self.poll
+                                .registry()
+                                .register(socket, token, Interest::READABLE)?;
                         }
-                        _ => unreachable!()
+                        _ => unreachable!(),
                     }
 
                     let result = self.handle_connection_readable(token)?;
 
-                    debug!("{:?} // Connection from {} is {:?} (Token {:?})", self.my_id, addr, result, token);
+                    debug!(
+                        "{:?} // Connection from {} is {:?} (Token {:?})",
+                        self.my_id, addr, result, token
+                    );
 
                     self.handle_connection_result(token, result)?;
                 }
@@ -229,7 +252,8 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
 
             match &connection_result {
                 ConnectionResult::Connected(_, _) => {
-                    self.handle_connection_result(token, connection_result).expect("Failed to write");
+                    self.handle_connection_result(token, connection_result)
+                        .expect("Failed to write");
                 }
                 _ => {}
             }
@@ -245,46 +269,74 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
                 let node = if let Some(first_msg) = pending_messages.pop() {
                     let node_info = first_msg.payload_buf();
 
-                    let (node_info, read): (NodeInfo, usize) = bincode::serde::decode_from_slice(node_info.as_ref(), bincode::config::standard())?;
+                    let (node_info, read): (NodeInfo, usize) = bincode::serde::decode_from_slice(
+                        node_info.as_ref(),
+                        bincode::config::standard(),
+                    )?;
 
                     node_info
                 } else {
+                    error!(
+                        "{:?} // Received connection from {:?} but no node info was received",
+                        self.my_id, node_id
+                    );
 
-                    error!("{:?} // Received connection from {:?} but no node info was received", self.my_id, node_id);
-
-                    return Err(anyhow!("Received connection from {:?} but no node info was received", node_id));
+                    return Err(anyhow!(
+                        "Received connection from {:?} but no node info was received",
+                        node_id
+                    ));
                 };
 
-                debug!("{:?} // Incoming connection to {:?} is now established with token {:?}, {:?}", self.my_id, node_id, token,
-                    self.currently_accepting.iter().map(|(token, conn)| (Token(token), conn)).collect::<Vec<_>>());
+                debug!(
+                    "{:?} // Incoming connection to {:?} is now established with token {:?}, {:?}",
+                    self.my_id,
+                    node_id,
+                    token,
+                    self.currently_accepting
+                        .iter()
+                        .map(|(token, conn)| (Token(token), conn))
+                        .collect::<Vec<_>>()
+                );
 
                 if let Some(mut connection) = self.currently_accepting.try_remove(token.into()) {
                     match connection {
-                        PendingConnection::PendingConn { mut socket, channel, write_buf, read_buf, .. } => {
+                        PendingConnection::PendingConn {
+                            mut socket,
+                            channel,
+                            write_buf,
+                            read_buf,
+                            ..
+                        } => {
                             // Deregister from this poller as we are no longer
                             // the ones that should handle this connection
                             self.poll.registry().deregister(&mut socket)?;
 
-                            let conn = self.peer_conns.handle_connection_established_with_socket(node,
-                                                                                                 socket,
-                                                                                                 read_buf,
-                                                                                                 write_buf,
-                                                                                                 channel.unwrap_or_else(conn_util::initialize_send_channel))?;
+                            let conn = self.peer_conns.handle_connection_established_with_socket(
+                                node,
+                                socket,
+                                read_buf,
+                                write_buf,
+                                channel.unwrap_or_else(conn_util::initialize_send_channel),
+                            )?;
                             // We have identified the peer and should now handle the connection
                             for message in pending_messages {
                                 if message.header().payload_length() > 0 {
-                                    conn.byte_input_stub.handle_message(&self.network_info, message)?;
+                                    conn.byte_input_stub
+                                        .handle_message(&self.network_info, message)?;
                                 }
                             }
                         }
-                        _ => unreachable!()
+                        _ => unreachable!(),
                     }
                 } else {
                     unreachable!()
                 }
             }
             ConnectionResult::ConnectionBroken => {
-                debug!("{:?} // Connection result as broken for token {:?}", self.my_id, token);
+                debug!(
+                    "{:?} // Connection result as broken for token {:?}",
+                    self.my_id, token
+                );
 
                 // Discard of the connection since it has been broken
                 if let Some(mut connection) = self.currently_accepting.try_remove(token.into()) {
@@ -292,7 +344,7 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
                         PendingConnection::PendingConn { mut socket, .. } => {
                             self.poll.registry().deregister(&mut socket)?;
                         }
-                        _ => unreachable!()
+                        _ => unreachable!(),
                     }
                 } else {
                     unreachable!()
@@ -341,7 +393,12 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
         let connection = &mut self.currently_accepting[token.into()];
 
         match connection {
-            PendingConnection::PendingConn { socket, write_buf, channel, .. } => {
+            PendingConnection::PendingConn {
+                socket,
+                write_buf,
+                channel,
+                ..
+            } => {
                 let was_waiting_for_write = write_buf.is_some();
                 let mut wrote = false;
 
@@ -361,13 +418,14 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
                                     wrote = true;
 
                                     // We have something to write
-                                    *write_buf = Some(WritingBuffer::init_from_message(to_write).unwrap());
+                                    *write_buf =
+                                        Some(WritingBuffer::init_from_message(to_write).unwrap());
 
                                     write_buf.as_mut().unwrap()
                                 }
                                 Err(_) => {
                                     // Nothing to write
-                                    trace!("Nothing left to write, wrote? {}",  wrote);
+                                    trace!("Nothing left to write, wrote? {}", wrote);
 
                                     // If we have written something in this loop but we have not written until
                                     // Would block then we should flush the connection
@@ -376,7 +434,9 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
                                             Ok(_) => {}
                                             Err(ref err) if would_block(err) => break,
                                             Err(ref err) if interrupted(err) => continue,
-                                            Err(err) => { return Err(err); }
+                                            Err(err) => {
+                                                return Err(err);
+                                            }
                                         };
                                     }
 
@@ -385,11 +445,15 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
                             }
                         };
 
-                        match conn_util::try_write_until_block(socket, writing).expect("Failed to write to socket") {
+                        match conn_util::try_write_until_block(socket, writing)
+                            .expect("Failed to write to socket")
+                        {
                             ConnectionWriteWork::ConnectionBroken => {
                                 return Ok(ConnectionResult::ConnectionBroken);
                             }
-                            ConnectionWriteWork::Working => { break; }
+                            ConnectionWriteWork::Working => {
+                                break;
+                            }
                             ConnectionWriteWork::Done => {
                                 *write_buf = None;
                             }
@@ -398,11 +462,17 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
 
                     if write_buf.is_none() && was_waiting_for_write {
                         // We have nothing more to write, so we no longer need to be notified of writability
-                        self.poll.registry().reregister(socket, token, Interest::READABLE)?;
+                        self.poll
+                            .registry()
+                            .reregister(socket, token, Interest::READABLE)?;
                     } else if write_buf.is_some() && !was_waiting_for_write {
                         // We still have something to write but we reached a would block state,
                         // so we need to be notified of writability.
-                        self.poll.registry().reregister(socket, token, Interest::READABLE.add(Interest::WRITABLE))?;
+                        self.poll.registry().reregister(
+                            socket,
+                            token,
+                            Interest::READABLE.add(Interest::WRITABLE),
+                        )?;
                     } else {
                         // We have nothing to write and we were not waiting for writability, so we
                         // Don't need to re register
@@ -411,7 +481,7 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
                     }
                 }
             }
-            _ => unreachable!()
+            _ => unreachable!(),
         }
 
         Ok(ConnectionResult::Working)
@@ -419,20 +489,27 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
 
     fn handle_connection_readable(&mut self, token: Token) -> Result<ConnectionResult> {
         let connection = &mut self.currently_accepting[token.into()];
-        trace!("{:?} // Handling read event for connection {:?}", self.my_id, token);
+        trace!(
+            "{:?} // Handling read event for connection {:?}",
+            self.my_id,
+            token
+        );
 
         let result = match connection {
-            PendingConnection::PendingConn { peer_id, socket, read_buf, node_type, .. } => {
+            PendingConnection::PendingConn {
+                peer_id,
+                socket,
+                read_buf,
+                node_type,
+                ..
+            } => {
                 let read = conn_util::read_until_block(socket, read_buf)?;
 
                 match read {
-                    ConnectionReadWork::ConnectionBroken => {
-                        ConnectionResult::ConnectionBroken
-                    }
-                    ConnectionReadWork::Working => {
-                        ConnectionResult::Working
-                    }
-                    ConnectionReadWork::WorkingAndReceived(received) | ConnectionReadWork::ReceivedAndDone(received) => {
+                    ConnectionReadWork::ConnectionBroken => ConnectionResult::ConnectionBroken,
+                    ConnectionReadWork::Working => ConnectionResult::Working,
+                    ConnectionReadWork::WorkingAndReceived(received)
+                    | ConnectionReadWork::ReceivedAndDone(received) => {
                         let connection_peer_id = if let Some(message) = received.first() {
                             let header = message.header();
                             let connection_peer_id = header.from();
@@ -452,7 +529,10 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
                                 None => {
                                     debug!("Received connection ID for token {:?}, from {:?}. No existing connection has been found, initializing.", token, connection_peer_id,);
 
-                                    return Ok(ConnectionResult::Connected(connection_peer_id, received));
+                                    return Ok(ConnectionResult::Connected(
+                                        connection_peer_id,
+                                        received,
+                                    ));
                                 }
                                 Some(conn) => {
                                     trace!("Received connection ID for token {:?}, from {:?}, node type is: {:?}\
@@ -463,27 +543,30 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
 
                                     connection.fill_channel(channel);
 
-                                    return Ok(ConnectionResult::Connected(connection_peer_id, received));
+                                    return Ok(ConnectionResult::Connected(
+                                        connection_peer_id,
+                                        received,
+                                    ));
                                 }
                             }
                         }
 
                         for message in received {
-                            self.peer_conns.loopback().handle_message(&self.network_info, message)?;
+                            self.peer_conns
+                                .loopback()
+                                .handle_message(&self.network_info, message)?;
                         }
 
                         ConnectionResult::Working
                     }
                 }
             }
-            _ => unreachable!()
+            _ => unreachable!(),
         };
-
 
         Ok(result)
     }
 }
-
 
 impl ConnectionHandler {
     pub(super) fn initialize(my_id: NodeId, conn_count: ConnCounts) -> Self {
@@ -498,16 +581,27 @@ impl ConnectionHandler {
     /// Returns true if we can attempt to connect to this node, false otherwise
     /// We may not be able to connect to a given node if the amount of connections
     /// being established already overtakes the limit of concurrent connections
-    fn register_connecting_to_node<NI>(&self, peer_id: NodeId, network_info: &NI) -> bool where NI: NetworkInformationProvider {
+    fn register_connecting_to_node<NI>(&self, peer_id: NodeId, network_info: &NI) -> bool
+    where
+        NI: NetworkInformationProvider,
+    {
         let mut connecting_guard = self.currently_connecting.lock().unwrap();
 
         let value = connecting_guard.entry(peer_id).or_insert(0);
 
         *value += 1;
 
-        let other_node_type = network_info.get_node_info(&peer_id).map(|info| info.node_type()).expect("Failed to get node type");
+        let other_node_type = network_info
+            .get_node_info(&peer_id)
+            .map(|info| info.node_type())
+            .expect("Failed to get node type");
 
-        if *value > self.concurrent_conn.get_connections_to_node(network_info.own_node_info().node_type(), other_node_type) * 2 {
+        if *value
+            > self
+                .concurrent_conn
+                .get_connections_to_node(network_info.own_node_info().node_type(), other_node_type)
+                * 2
+        {
             *value -= 1;
 
             false
@@ -520,7 +614,9 @@ impl ConnectionHandler {
     fn done_connecting_to_node(&self, peer_id: &NodeId) {
         let mut connection_guard = self.currently_connecting.lock().unwrap();
 
-        connection_guard.entry(peer_id.clone()).and_modify(|value| { *value -= 1 });
+        connection_guard
+            .entry(peer_id.clone())
+            .and_modify(|value| *value -= 1);
 
         if let Some(connection_count) = connection_guard.get(peer_id) {
             if *connection_count <= 0 {
@@ -529,27 +625,43 @@ impl ConnectionHandler {
         }
     }
 
-    pub fn connect_to_node<NI, CN, CNP>(self: &Arc<Self>, connections: Arc<Connections<NI, CN, CNP>>,
-                                        peer_id: NodeId, addr: PeerAddr) -> std::result::Result<OneShotRx<Result<()>>, ConnectionEstablishError>
-        where
-            NI: NetworkInformationProvider + 'static,
-            CN: NodeIncomingStub + 'static,
-            CNP: NodeStubController<ByteMessageSendStub, CN> + 'static {
+    pub fn connect_to_node<NI, CN, CNP>(
+        self: &Arc<Self>,
+        connections: Arc<Connections<NI, CN, CNP>>,
+        peer_id: NodeId,
+        addr: PeerAddr,
+    ) -> std::result::Result<OneShotRx<Result<()>>, ConnectionEstablishError>
+    where
+        NI: NetworkInformationProvider + 'static,
+        CN: NodeIncomingStub + 'static,
+        CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
+    {
         let (tx, rx) = channel::new_oneshot_channel();
 
-        debug!(" {:?} // Connecting to node {:?} at {:?}", self.my_id(), peer_id, addr);
+        debug!(
+            " {:?} // Connecting to node {:?} at {:?}",
+            self.my_id(),
+            peer_id,
+            addr
+        );
 
         let conn_handler = Arc::clone(self);
 
         if !self.register_connecting_to_node(peer_id, &*connections.network_info) {
-            warn!("{:?} // Tried to connect to node that I'm already connecting to {:?}",
-                conn_handler.my_id(), peer_id);
+            warn!(
+                "{:?} // Tried to connect to node that I'm already connecting to {:?}",
+                conn_handler.my_id(),
+                peer_id
+            );
 
             return Err!(ConnectionEstablishError::AlreadyConnectingToNode(peer_id));
         }
 
         let own_info = connections.network_info().own_node_info().clone();
-        let other_node_info = connections.network_info().get_node_info(&peer_id).expect("Failed to get node info");
+        let other_node_info = connections
+            .network_info()
+            .get_node_info(&peer_id)
+            .expect("Failed to get node info");
 
         std::thread::Builder::new()
             .name(format!("Connecting to Node {:?}", peer_id))
@@ -675,43 +787,55 @@ impl ConnectionHandler {
     }
 }
 
-pub fn initialize_server<NI, CN, CNP>(my_id: NodeId, listener: SyncListener,
-                                      connection_handler: Arc<ConnectionHandler>,
-                                      network_info: Arc<NI>,
-                                      conns: Arc<Connections<NI, CN, CNP>>, ) -> Arc<Waker>
-    where NI: NetworkInformationProvider + 'static,
-          CN: NodeIncomingStub + 'static,
-          CNP: NodeStubController<ByteMessageSendStub, CN> + 'static, {
-    let server_worker = ServerWorker::new(my_id.clone(),
-                                          listener.into(),
-                                          connection_handler.clone(),
-                                          network_info,
-                                          conns).unwrap();
+pub fn initialize_server<NI, CN, CNP>(
+    my_id: NodeId,
+    listener: SyncListener,
+    connection_handler: Arc<ConnectionHandler>,
+    network_info: Arc<NI>,
+    conns: Arc<Connections<NI, CN, CNP>>,
+) -> Arc<Waker>
+where
+    NI: NetworkInformationProvider + 'static,
+    CN: NodeIncomingStub + 'static,
+    CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
+{
+    let server_worker = ServerWorker::new(
+        my_id.clone(),
+        listener.into(),
+        connection_handler.clone(),
+        network_info,
+        conns,
+    )
+    .unwrap();
 
     let waker = server_worker.waker.clone();
 
     std::thread::Builder::new()
         .name(format!("Server Worker {:?}", my_id))
-        .spawn(move || {
-            match server_worker.event_loop() {
-                Ok(_) => {}
-                Err(error) => {
-                    error!("Error in server worker {:?} {:?}", my_id, error)
-                }
+        .spawn(move || match server_worker.event_loop() {
+            Ok(_) => {}
+            Err(error) => {
+                error!("Error in server worker {:?} {:?}", my_id, error)
             }
-        }).expect("Failed to allocate thread for server worker");
+        })
+        .expect("Failed to allocate thread for server worker");
 
     waker
 }
 
 impl PendingConnection {
-
-    fn fill_channel(&mut self, ch: (ChannelSyncTx<NetworkSerializedMessage>, ChannelSyncRx<NetworkSerializedMessage>)) {
+    fn fill_channel(
+        &mut self,
+        ch: (
+            ChannelSyncTx<NetworkSerializedMessage>,
+            ChannelSyncRx<NetworkSerializedMessage>,
+        ),
+    ) {
         match self {
             PendingConnection::PendingConn { channel, .. } => {
                 *channel = Some(ch);
             }
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 }
@@ -734,8 +858,19 @@ impl From<MioSocket> for PendingConnection {
 impl Debug for PendingConnection {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            PendingConnection::PendingConn { peer_id, node_type, socket, .. } => {
-                write!(f, "Peer conn {:?}, type {:?}, addr {:?}", peer_id, node_type, socket.peer_addr())
+            PendingConnection::PendingConn {
+                peer_id,
+                node_type,
+                socket,
+                ..
+            } => {
+                write!(
+                    f,
+                    "Peer conn {:?}, type {:?}, addr {:?}",
+                    peer_id,
+                    node_type,
+                    socket.peer_addr()
+                )
             }
             PendingConnection::Waker => {
                 write!(f, "Waker")

@@ -1,24 +1,26 @@
+use crate::conn_util;
+use crate::conn_util::{
+    interrupted, would_block, ConnectionReadWork, ConnectionWriteWork, ReadingBuffer, WritingBuffer,
+};
+use crate::connections::{ByteMessageSendStub, ConnHandle, Connections, PeerConn};
+use crate::epoll::{EpollWorkerId, EpollWorkerMessage, NewConnection};
+use anyhow::Context;
+use atlas_common::channel::ChannelSyncRx;
+use atlas_common::node_id::NodeId;
+use atlas_common::socket::MioSocket;
+use atlas_common::Err;
+use atlas_communication::byte_stub::{ByteNetworkStub, NodeIncomingStub, NodeStubController};
+use atlas_communication::message::WireMessage;
+use atlas_communication::reconfiguration::NetworkInformationProvider;
+use log::{debug, error, info, trace};
+use mio::event::Event;
+use mio::{Events, Interest, Poll, Token, Waker};
+use slab::Slab;
 use std::io;
 use std::io::Write;
 use std::net::Shutdown;
 use std::sync::Arc;
 use std::time::Duration;
-use anyhow::Context;
-use log::{debug, error, info, trace};
-use mio::{Events, Interest, Poll, Token, Waker};
-use mio::event::Event;
-use slab::Slab;
-use atlas_common::channel::ChannelSyncRx;
-use atlas_common::Err;
-use atlas_common::node_id::NodeId;
-use atlas_common::socket::MioSocket;
-use atlas_communication::byte_stub::{ByteNetworkStub, NodeIncomingStub, NodeStubController};
-use atlas_communication::message::WireMessage;
-use atlas_communication::reconfiguration::NetworkInformationProvider;
-use crate::conn_util;
-use crate::conn_util::{ConnectionReadWork, ConnectionWriteWork, interrupted, ReadingBuffer, would_block, WritingBuffer};
-use crate::connections::{ByteMessageSendStub, Connections, ConnHandle, PeerConn};
-use crate::epoll::{EpollWorkerId, EpollWorkerMessage, NewConnection};
 
 const EVENT_CAPACITY: usize = 1024;
 const DEFAULT_SOCKET_CAPACITY: usize = 1024;
@@ -31,7 +33,10 @@ enum ConnectionWorkResult {
 
 type ConnectionRegister = ChannelSyncRx<MioSocket>;
 
-pub(crate) struct EpollWorker<NI, CN, CNP> where NI: NetworkInformationProvider {
+pub(crate) struct EpollWorker<NI, CN, CNP>
+where
+    NI: NetworkInformationProvider,
+{
     worker_id: EpollWorkerId,
 
     global_conns: Arc<Connections<NI, CN, CNP>>,
@@ -61,34 +66,46 @@ enum SocketConnection<CN> {
 impl<CN> SocketConnection<CN> {
     pub(crate) fn peer_id(&self) -> Option<NodeId> {
         match self {
-            SocketConnection::PeerConn { handle, .. } => {
-                Some(handle.peer_id())
-            }
-            SocketConnection::Waker => None
+            SocketConnection::PeerConn { handle, .. } => Some(handle.peer_id()),
+            SocketConnection::Waker => None,
         }
     }
 }
 
 impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
-    where CN: NodeIncomingStub + 'static,
-          NI: NetworkInformationProvider + 'static,
-          CNP: NodeStubController<ByteMessageSendStub, CN> + 'static {
+where
+    CN: NodeIncomingStub + 'static,
+    NI: NetworkInformationProvider + 'static,
+    CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
+{
     /// Initializing a worker thread for the worker group
-    pub(crate) fn new(worker_id: EpollWorkerId, connections: Arc<Connections<NI, CN, CNP>>,
-               register: ChannelSyncRx<EpollWorkerMessage<CN>>) -> atlas_common::error::Result<Self> {
-        let poll = Poll::new().context(format!("Failed to initialize poll for worker {:?}", worker_id))?;
+    pub(crate) fn new(
+        worker_id: EpollWorkerId,
+        connections: Arc<Connections<NI, CN, CNP>>,
+        register: ChannelSyncRx<EpollWorkerMessage<CN>>,
+    ) -> atlas_common::error::Result<Self> {
+        let poll = Poll::new().context(format!(
+            "Failed to initialize poll for worker {:?}",
+            worker_id
+        ))?;
 
         let mut conn_slab = Slab::with_capacity(DEFAULT_SOCKET_CAPACITY);
 
         let entry = conn_slab.vacant_entry();
 
         let waker_token = Token(entry.key());
-        let waker = Arc::new(Waker::new(poll.registry(), waker_token)
-            .context(format!("Failed to create waker for worker {:?}", worker_id))?);
+        let waker = Arc::new(
+            Waker::new(poll.registry(), waker_token)
+                .context(format!("Failed to create waker for worker {:?}", worker_id))?,
+        );
 
         entry.insert(SocketConnection::Waker);
 
-        info!("{:?} // Initialized Epoll Worker where Waker is token {:?}", connections.own_id(), waker_token);
+        info!(
+            "{:?} // Initialized Epoll Worker where Waker is token {:?}",
+            connections.own_id(),
+            waker_token
+        );
 
         Ok(Self {
             worker_id,
@@ -121,7 +138,13 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
                 }
             }
 
-            trace!("{:?} // Worker {}: Handling {} events {:?}", self.global_conns.own_id(), self.worker_id, event_queue.iter().count(), event_queue);
+            trace!(
+                "{:?} // Worker {}: Handling {} events {:?}",
+                self.global_conns.own_id(),
+                self.worker_id,
+                event_queue.iter().count(),
+                event_queue
+            );
 
             for event in event_queue.iter() {
                 if event.token() == waker_token {
@@ -195,8 +218,10 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
                                     self.global_conns.own_id(), token,peer_id);
 
                             if let Err(err) = self.delete_connection(token, true) {
-                                error!("{:?} // Error deleting connection {:?} to node {:?}: {:?}",
-                                        my_id, token, peer_id, err);
+                                error!(
+                                    "{:?} // Error deleting connection {:?} to node {:?}: {:?}",
+                                    my_id, token, peer_id, err
+                                );
                             }
                         }
                         Ok(_) => {}
@@ -211,8 +236,10 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
                                             self.global_conns.own_id(), err, token, peer_id);
 
                             if let Err(err) = self.delete_connection(token, true) {
-                                error!("{:?} // Error deleting connection {:?} to node {:?}: {:?}",
-                                        my_id, token, peer_id, err);
+                                error!(
+                                    "{:?} // Error deleting connection {:?} to node {:?}: {:?}",
+                                    my_id, token, peer_id, err
+                                );
                             }
                         }
                     }
@@ -223,11 +250,19 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
         }
     }
 
-    fn handle_connection_event(&mut self, token: Token, event: &Event) -> atlas_common::error::Result<ConnectionWorkResult> {
+    fn handle_connection_event(
+        &mut self,
+        token: Token,
+        event: &Event,
+    ) -> atlas_common::error::Result<ConnectionWorkResult> {
         let connection = if self.connections.contains(token.into()) {
             &self.connections[token.into()]
         } else {
-            error!("{:?} // Received event for non-existent connection with token {:?}", self.global_conns.own_id(), token);
+            error!(
+                "{:?} // Received event for non-existent connection with token {:?}",
+                self.global_conns.own_id(),
+                token
+            );
 
             return Ok(ConnectionWorkResult::ConnectionBroken);
         };
@@ -241,7 +276,9 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
                 }
 
                 if event.is_writable() {
-                    if let ConnectionWorkResult::ConnectionBroken = self.try_write_until_block(token)? {
+                    if let ConnectionWorkResult::ConnectionBroken =
+                        self.try_write_until_block(token)?
+                    {
                         return Ok(ConnectionWorkResult::ConnectionBroken);
                     }
                 }
@@ -252,11 +289,18 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
         Ok(ConnectionWorkResult::Working)
     }
 
-    fn try_write_until_block(&mut self, token: Token) -> atlas_common::error::Result<ConnectionWorkResult> {
+    fn try_write_until_block(
+        &mut self,
+        token: Token,
+    ) -> atlas_common::error::Result<ConnectionWorkResult> {
         let connection = if self.connections.contains(token.into()) {
             &mut self.connections[token.into()]
         } else {
-            error!("{:?} // Received write event for non-existent connection with token {:?}", self.global_conns.own_id(), token);
+            error!(
+                "{:?} // Received write event for non-existent connection with token {:?}",
+                self.global_conns.own_id(),
+                token
+            );
 
             return Ok(ConnectionWorkResult::ConnectionBroken);
         };
@@ -281,7 +325,11 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
                         // We are not currently writing anything
 
                         if let Some(to_write) = connection.try_take_from_send()? {
-                            trace!("{:?} // Writing message {:?}", self.global_conns.own_id(), to_write);
+                            trace!(
+                                "{:?} // Writing message {:?}",
+                                self.global_conns.own_id(),
+                                to_write
+                            );
                             wrote = true;
 
                             // We have something to write
@@ -290,7 +338,11 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
                             writing_info.as_mut().unwrap()
                         } else {
                             // Nothing to write
-                            trace!("{:?} // Nothing left to write, wrote? {}", self.global_conns.own_id(), wrote);
+                            trace!(
+                                "{:?} // Nothing left to write, wrote? {}",
+                                self.global_conns.own_id(),
+                                wrote
+                            );
 
                             // If we have written something in this loop but we have not written until
                             // Would block then we should flush the connection
@@ -299,7 +351,9 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
                                     Ok(_) => {}
                                     Err(ref err) if would_block(err) => break,
                                     Err(ref err) if interrupted(err) => continue,
-                                    Err(err) => { return Err!(err); }
+                                    Err(err) => {
+                                        return Err!(err);
+                                    }
                                 };
                             }
 
@@ -311,7 +365,9 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
                         ConnectionWriteWork::ConnectionBroken => {
                             return Ok(ConnectionWorkResult::ConnectionBroken);
                         }
-                        ConnectionWriteWork::Working => { break; }
+                        ConnectionWriteWork::Working => {
+                            break;
+                        }
                         ConnectionWriteWork::Done => {
                             *writing_info = None;
                         }
@@ -320,12 +376,16 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
 
                 if writing_info.is_none() && was_waiting_for_write {
                     // We have nothing more to write, so we no longer need to be notified of writability
-                    self.poll.registry().reregister(socket, token, Interest::READABLE)
+                    self.poll
+                        .registry()
+                        .reregister(socket, token, Interest::READABLE)
                         .context("Failed to reregister socket")?;
                 } else if writing_info.is_some() && !was_waiting_for_write {
                     // We still have something to write but we reached a would block state,
                     // so we need to be notified of writability.
-                    self.poll.registry().reregister(socket, token, Interest::READABLE.add(Interest::WRITABLE))
+                    self.poll
+                        .registry()
+                        .reregister(socket, token, Interest::READABLE.add(Interest::WRITABLE))
                         .context("Failed to reregister socket")?;
                 } else {
                     // We have nothing to write and we were not waiting for writability, so we
@@ -334,17 +394,24 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
                     // So we also don't have to re register
                 }
             }
-            _ => unreachable!()
+            _ => unreachable!(),
         }
 
         Ok(ConnectionWorkResult::Working)
     }
 
-    fn read_until_block(&mut self, token: Token) -> atlas_common::error::Result<ConnectionWorkResult> {
+    fn read_until_block(
+        &mut self,
+        token: Token,
+    ) -> atlas_common::error::Result<ConnectionWorkResult> {
         let connection = if self.connections.contains(token.into()) {
             &mut self.connections[token.into()]
         } else {
-            error!("{:?} // Received read event for non-existent connection with token {:?}", self.global_conns.own_id(), token);
+            error!(
+                "{:?} // Received read event for non-existent connection with token {:?}",
+                self.global_conns.own_id(),
+                token
+            );
 
             return Ok(ConnectionWorkResult::ConnectionBroken);
         };
@@ -361,19 +428,23 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
                     ConnectionReadWork::ConnectionBroken => {
                         return Ok(ConnectionWorkResult::ConnectionBroken);
                     }
-                    ConnectionReadWork::Working => { return Ok(ConnectionWorkResult::Working); }
-                    ConnectionReadWork::WorkingAndReceived(received) | ConnectionReadWork::ReceivedAndDone(received) => {
-
+                    ConnectionReadWork::Working => {
+                        return Ok(ConnectionWorkResult::Working);
+                    }
+                    ConnectionReadWork::WorkingAndReceived(received)
+                    | ConnectionReadWork::ReceivedAndDone(received) => {
                         // Handle the messages that we have received
                         // In this case by propagating them upwards in the architecture
                         for message in received {
-                            connection.byte_input_stub().handle_message(self.global_conns.network_info(), message)?;
+                            connection
+                                .byte_input_stub()
+                                .handle_message(self.global_conns.network_info(), message)?;
                         }
                     }
                 }
                 // We don't have any more
             }
-            _ => unreachable!()
+            _ => unreachable!(),
         }
 
         Ok(ConnectionWorkResult::Working)
@@ -410,9 +481,13 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
 
     fn create_connection(&mut self, conn: NewConnection<CN>) -> atlas_common::error::Result<()> {
         let NewConnection {
-            conn_id, peer_id,
-            my_id, mut socket,
-            reading_info, writing_info, peer_conn
+            conn_id,
+            peer_id,
+            my_id,
+            mut socket,
+            reading_info,
+            writing_info,
+            peer_conn,
         } = conn;
 
         let entry = self.connections.vacant_entry();
@@ -420,15 +495,19 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
         let token = Token(entry.key());
 
         let handle = ConnHandle::new(
-            conn_id, my_id, peer_id,
-            self.worker_id, token,
+            conn_id,
+            my_id,
+            peer_id,
+            self.worker_id,
+            token,
             self.waker.clone(),
         );
 
         peer_conn.register_peer_conn(handle.clone());
 
-        self.poll.registry().register(&mut socket,
-                                      token, Interest::READABLE)?;
+        self.poll
+            .registry()
+            .register(&mut socket, token, Interest::READABLE)?;
 
         let socket_conn = SocketConnection::PeerConn {
             handle: handle.clone(),
@@ -440,7 +519,13 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
 
         entry.insert(socket_conn);
 
-        debug!("{:?} // Registered new connection {:?} to node {:?} in epoll worker {:?}", self.global_conns.own_id(), token, peer_id, self.worker_id);
+        debug!(
+            "{:?} // Registered new connection {:?} to node {:?} in epoll worker {:?}",
+            self.global_conns.own_id(),
+            token,
+            peer_id,
+            self.worker_id
+        );
 
         self.read_until_block(token)?;
         self.try_write_until_block(token)?;
@@ -448,28 +533,38 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
         Ok(())
     }
 
-    fn delete_connection(&mut self, token: Token, is_failure: bool) -> atlas_common::error::Result<()> {
+    fn delete_connection(
+        &mut self,
+        token: Token,
+        is_failure: bool,
+    ) -> atlas_common::error::Result<()> {
         if let Some(conn) = self.connections.try_remove(token.into()) {
             match conn {
                 SocketConnection::PeerConn {
                     mut socket,
                     connection,
-                    handle, ..
+                    handle,
+                    ..
                 } => {
                     self.poll.registry().deregister(&mut socket)?;
 
                     if is_failure {
-                        self.global_conns.handle_connection_failed(handle.peer_id(), handle.id());
+                        self.global_conns
+                            .handle_connection_failed(handle.peer_id(), handle.id());
                     } else {
                         connection.delete_connection(handle.id());
                     }
 
                     socket.shutdown(Shutdown::Both)?;
                 }
-                _ => unreachable!("Only peer connections can be removed from the connection slab")
+                _ => unreachable!("Only peer connections can be removed from the connection slab"),
             }
         } else {
-            error!("{:?} // Tried to remove a connection that doesn't exist, {:?}", self.global_conns.own_id(), token);
+            error!(
+                "{:?} // Tried to remove a connection that doesn't exist, {:?}",
+                self.global_conns.own_id(),
+                token
+            );
         }
 
         Ok(())

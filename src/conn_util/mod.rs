@@ -1,17 +1,17 @@
-use std::io;
-use std::io::{Read, Write};
-use std::mem::size_of;
-use bytes::{Buf, Bytes, BytesMut};
-use getset::Getters;
-use log::{debug, trace, warn};
-use atlas_common::{channel, Err};
+use crate::config::TcpConfig;
 use atlas_common::channel::{ChannelSyncRx, ChannelSyncTx};
 use atlas_common::node_id::{NodeId, NodeType};
 use atlas_common::socket::MioSocket;
+use atlas_common::{channel, Err};
 use atlas_communication::lookup_table::MessageModule;
 use atlas_communication::message::{Header, WireMessage};
 use atlas_communication::reconfiguration::{NetworkInformationProvider, NodeInfo};
-use crate::config::TcpConfig;
+use bytes::{Buf, Bytes, BytesMut};
+use getset::Getters;
+use log::{debug, trace, warn};
+use std::io;
+use std::io::{Read, Write};
+use std::mem::size_of;
 
 pub type Callback = Option<Box<dyn FnOnce(bool) -> () + Send>>;
 
@@ -35,7 +35,7 @@ impl ConnCounts {
     pub(crate) fn get_connections_to_node(&self, my_type: NodeType, other_type: NodeType) -> usize {
         return match (my_type, other_type) {
             (NodeType::Replica, NodeType::Replica) => self.replica_connections,
-            _ => self.client_connections
+            _ => self.client_connections,
         };
     }
 }
@@ -87,7 +87,11 @@ enum InternalWorkResult {
     Done,
 }
 
-fn attempt_to_write_bytes_until_block(socket: &mut MioSocket, written_bytes: &mut usize, buffer: &Bytes) -> atlas_common::error::Result<InternalWorkResult> {
+fn attempt_to_write_bytes_until_block(
+    socket: &mut MioSocket,
+    written_bytes: &mut usize,
+    buffer: &Bytes,
+) -> atlas_common::error::Result<InternalWorkResult> {
     match socket.write(&buffer[*written_bytes..]) {
         Ok(0) => return Ok(InternalWorkResult::ConnectionBroken),
         Ok(n) => {
@@ -109,15 +113,26 @@ fn attempt_to_write_bytes_until_block(socket: &mut MioSocket, written_bytes: &mu
             Ok(InternalWorkResult::WouldBlock)
         }
         Err(err) if interrupted(&err) => Ok(InternalWorkResult::Interrupted),
-        Err(err) => { return Err!(err); }
+        Err(err) => {
+            return Err!(err);
+        }
     }
 }
 
-pub(crate) fn try_write_until_block(socket: &mut MioSocket, writing_buffer: &mut WritingBuffer) -> atlas_common::error::Result<ConnectionWriteWork> {
+pub(crate) fn try_write_until_block(
+    socket: &mut MioSocket,
+    writing_buffer: &mut WritingBuffer,
+) -> atlas_common::error::Result<ConnectionWriteWork> {
     loop {
         if let Some(header) = writing_buffer.current_header.as_ref() {
-            match attempt_to_write_bytes_until_block(socket, &mut writing_buffer.written_bytes, header)? {
-                InternalWorkResult::ConnectionBroken => return Ok(ConnectionWriteWork::ConnectionBroken),
+            match attempt_to_write_bytes_until_block(
+                socket,
+                &mut writing_buffer.written_bytes,
+                header,
+            )? {
+                InternalWorkResult::ConnectionBroken => {
+                    return Ok(ConnectionWriteWork::ConnectionBroken)
+                }
                 InternalWorkResult::Working => {}
                 InternalWorkResult::WouldBlock => break,
                 InternalWorkResult::Interrupted => continue,
@@ -126,8 +141,14 @@ pub(crate) fn try_write_until_block(socket: &mut MioSocket, writing_buffer: &mut
                 }
             }
         } else if let Some(msg_mod) = writing_buffer.message_module.as_ref() {
-            match attempt_to_write_bytes_until_block(socket, &mut writing_buffer.written_bytes, msg_mod)? {
-                InternalWorkResult::ConnectionBroken => return Ok(ConnectionWriteWork::ConnectionBroken),
+            match attempt_to_write_bytes_until_block(
+                socket,
+                &mut writing_buffer.written_bytes,
+                msg_mod,
+            )? {
+                InternalWorkResult::ConnectionBroken => {
+                    return Ok(ConnectionWriteWork::ConnectionBroken)
+                }
                 InternalWorkResult::Working => {}
                 InternalWorkResult::WouldBlock => break,
                 InternalWorkResult::Interrupted => continue,
@@ -136,8 +157,14 @@ pub(crate) fn try_write_until_block(socket: &mut MioSocket, writing_buffer: &mut
                 }
             }
         } else {
-            match attempt_to_write_bytes_until_block(socket, &mut writing_buffer.written_bytes, &writing_buffer.current_message)? {
-                InternalWorkResult::ConnectionBroken => return Ok(ConnectionWriteWork::ConnectionBroken),
+            match attempt_to_write_bytes_until_block(
+                socket,
+                &mut writing_buffer.written_bytes,
+                &writing_buffer.current_message,
+            )? {
+                InternalWorkResult::ConnectionBroken => {
+                    return Ok(ConnectionWriteWork::ConnectionBroken)
+                }
                 InternalWorkResult::Working => {}
                 InternalWorkResult::WouldBlock => break,
                 InternalWorkResult::Interrupted => continue,
@@ -151,16 +178,21 @@ pub(crate) fn try_write_until_block(socket: &mut MioSocket, writing_buffer: &mut
     Ok(ConnectionWriteWork::Working)
 }
 
-fn attempt_to_read_bytes_until_block(socket: &mut MioSocket, read_bytes: &mut usize, bytes_to_read: usize, buffer: &mut BytesMut) -> atlas_common::error::Result<InternalWorkResult> {
+fn attempt_to_read_bytes_until_block(
+    socket: &mut MioSocket,
+    read_bytes: &mut usize,
+    bytes_to_read: usize,
+    buffer: &mut BytesMut,
+) -> atlas_common::error::Result<InternalWorkResult> {
     let read = if bytes_to_read > 0 {
         match socket.read(&mut buffer[*read_bytes..]) {
             Ok(0) => return Ok(InternalWorkResult::ConnectionBroken),
-            Ok(n) => {
-                n
-            }
+            Ok(n) => n,
             Err(err) if would_block(&err) => return Ok(InternalWorkResult::WouldBlock),
             Err(err) if interrupted(&err) => return Ok(InternalWorkResult::Interrupted),
-            Err(err) => { return Err!(err); }
+            Err(err) => {
+                return Err!(err);
+            }
         }
     } else {
         return Ok(InternalWorkResult::Done);
@@ -182,7 +214,10 @@ impl ReadingBuffer {
     }
 }
 
-pub(crate) fn read_until_block(socket: &mut MioSocket, read_info: &mut ReadingBuffer) -> atlas_common::error::Result<ConnectionReadWork> {
+pub(crate) fn read_until_block(
+    socket: &mut MioSocket,
+    read_info: &mut ReadingBuffer,
+) -> atlas_common::error::Result<ConnectionReadWork> {
     let mut read_messages = Vec::new();
 
     loop {
@@ -195,7 +230,12 @@ pub(crate) fn read_until_block(socket: &mut MioSocket, read_info: &mut ReadingBu
                 let currently_read = read_info.read_bytes;
                 let bytes_to_read = header.payload_length() - currently_read;
 
-                trace!("Reading message with {} bytes to read payload {}, currently_read {}", bytes_to_read, header.payload_length(), currently_read);
+                trace!(
+                    "Reading message with {} bytes to read payload {}, currently_read {}",
+                    bytes_to_read,
+                    header.payload_length(),
+                    currently_read
+                );
 
                 let read = if bytes_to_read > 0 {
                     match socket.read(&mut read_info.reading_buffer[currently_read..]) {
@@ -211,7 +251,9 @@ pub(crate) fn read_until_block(socket: &mut MioSocket, read_info: &mut ReadingBu
                         }
                         Err(err) if would_block(&err) => break,
                         Err(err) if interrupted(&err) => continue,
-                        Err(err) => { return Err!(err); }
+                        Err(err) => {
+                            return Err!(err);
+                        }
                     }
                 } else {
                     // Only read if we need to read from the socket.
@@ -237,13 +279,16 @@ pub(crate) fn read_until_block(socket: &mut MioSocket, read_info: &mut ReadingBu
                     read_info.read_bytes += read;
                 }
             } else {
-
                 // We have already read the module of the message, so
                 // We are currently reading a message
                 let currently_read = read_info.read_bytes;
                 let bytes_to_read = size_of::<MessageModule>() - currently_read;
 
-                trace!("Reading message module with {} bytes to read, currently read {}", bytes_to_read, currently_read);
+                trace!(
+                    "Reading message module with {} bytes to read, currently read {}",
+                    bytes_to_read,
+                    currently_read
+                );
 
                 let read = if bytes_to_read > 0 {
                     match socket.read(&mut read_info.reading_buffer[currently_read..]) {
@@ -259,7 +304,9 @@ pub(crate) fn read_until_block(socket: &mut MioSocket, read_info: &mut ReadingBu
                         }
                         Err(err) if would_block(&err) => break,
                         Err(err) if interrupted(&err) => continue,
-                        Err(err) => { return Err!(err); }
+                        Err(err) => {
+                            return Err!(err);
+                        }
                     }
                 } else {
                     // Only read if we need to read from the socket.
@@ -270,14 +317,13 @@ pub(crate) fn read_until_block(socket: &mut MioSocket, read_info: &mut ReadingBu
                 trace!("Read {} bytes from socket", read);
 
                 if read >= bytes_to_read {
-
                     //FIXME: FIX THIS RIGHT NOW
                     let msg_mod = match read_info.reading_buffer[0] {
                         0 => MessageModule::Reconfiguration,
                         1 => MessageModule::Protocol,
                         2 => MessageModule::StateProtocol,
                         3 => MessageModule::Application,
-                        _ => unreachable!()
+                        _ => unreachable!(),
                     };
 
                     let msg_mod_size = size_of::<MessageModule>();
@@ -318,7 +364,9 @@ pub(crate) fn read_until_block(socket: &mut MioSocket, read_info: &mut ReadingBu
                     }
                     Err(err) if would_block(&err) => break,
                     Err(err) if interrupted(&err) => continue,
-                    Err(err) => { return Err!(err); }
+                    Err(err) => {
+                        return Err!(err);
+                    }
                 }
             } else {
                 // Only read if we need to read from the socket. (As we are missing bytes)
@@ -347,7 +395,9 @@ pub(crate) fn read_until_block(socket: &mut MioSocket, read_info: &mut ReadingBu
                 }
 
                 read_info.reading_buffer.reserve(size_of::<MessageModule>());
-                read_info.reading_buffer.resize(size_of::<MessageModule>(), 0);
+                read_info
+                    .reading_buffer
+                    .resize(size_of::<MessageModule>(), 0);
             } else {
                 read_info.read_bytes += read;
             }
@@ -360,7 +410,6 @@ pub(crate) fn read_until_block(socket: &mut MioSocket, read_info: &mut ReadingBu
         Ok(ConnectionReadWork::Working)
     }
 }
-
 
 pub(crate) fn would_block(err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::WouldBlock

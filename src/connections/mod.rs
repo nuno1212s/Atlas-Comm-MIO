@@ -1,37 +1,39 @@
 pub(crate) mod conn_establish;
 
-use std::net::Shutdown;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use anyhow::{anyhow, Context};
-use crossbeam_skiplist::SkipMap;
-use dashmap::DashMap;
-use dashmap::mapref::entry::Entry;
-use dashmap::mapref::one::Ref;
-use getset::{CopyGetters, Getters};
-use log::{debug, error, info, warn};
-use mio::{Token, Waker};
-use thiserror::Error;
-use atlas_common::{channel, Err};
-use atlas_common::channel::{ChannelSyncRx, ChannelSyncTx, OneShotRx, TryRecvError};
-use atlas_common::node_id::{NodeId, NodeType};
-use atlas_common::socket::{MioSocket, SecureSocket, SecureSocketSync, SyncListener};
-use atlas_communication::byte_stub;
-use atlas_communication::byte_stub::{ByteNetworkController, NodeIncomingStub, NodeStubController};
-use atlas_communication::byte_stub::connections::NetworkConnectionController;
-use atlas_communication::message::{NetworkSerializedMessage, WireMessage};
-use atlas_communication::reconfiguration::{NetworkInformationProvider, NodeInfo};
 use crate::conn_util;
 use crate::conn_util::{ConnCounts, ReadingBuffer, WritingBuffer};
 use crate::connections::conn_establish::{ConnectionEstablishError, ConnectionHandler};
 use crate::epoll::{EpollWorkerGroupHandle, EpollWorkerId, NewConnection};
+use anyhow::{anyhow, Context};
+use atlas_common::channel::{ChannelSyncRx, ChannelSyncTx, OneShotRx, TryRecvError};
+use atlas_common::node_id::{NodeId, NodeType};
+use atlas_common::socket::{MioSocket, SecureSocket, SecureSocketSync, SyncListener};
+use atlas_common::{channel, Err};
+use atlas_communication::byte_stub;
+use atlas_communication::byte_stub::connections::NetworkConnectionController;
+use atlas_communication::byte_stub::{ByteNetworkController, NodeIncomingStub, NodeStubController};
+use atlas_communication::message::{NetworkSerializedMessage, WireMessage};
+use atlas_communication::reconfiguration::{NetworkInformationProvider, NodeInfo};
+use crossbeam_skiplist::SkipMap;
+use dashmap::mapref::entry::Entry;
+use dashmap::mapref::one::Ref;
+use dashmap::DashMap;
+use getset::{CopyGetters, Getters};
+use log::{debug, error, info, warn};
+use mio::{Token, Waker};
+use std::net::Shutdown;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
+use thiserror::Error;
 
 pub const SEND_QUEUE_SIZE: usize = 1024;
 
 /// The manager for all currently active connections
 #[derive(Getters, CopyGetters)]
 pub struct Connections<NI, IS, CNP>
-    where NI: NetworkInformationProvider {
+where
+    NI: NetworkInformationProvider,
+{
     #[get_copy = "pub"]
     own_id: NodeId,
 
@@ -65,17 +67,15 @@ pub struct PeerConn<IS> {
     //The map connecting each connection to a token in the MIO Workers
     connections: Arc<SkipMap<u32, Option<ConnHandle>>>,
     // Sending messages to the connections
-    to_send: (
-        ChannelSyncTx<WireMessage>,
-        ChannelSyncRx<WireMessage>,
-    ),
+    to_send: (ChannelSyncTx<WireMessage>, ChannelSyncRx<WireMessage>),
 }
 
-
 impl<NI, CN, CNP> Connections<NI, CN, CNP>
-    where CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
-          NI: NetworkInformationProvider + 'static,
-          CN: NodeIncomingStub + 'static {
+where
+    CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
+    NI: NetworkInformationProvider + 'static,
+    CN: NodeIncomingStub + 'static,
+{
     pub(super) fn initialize_connections(
         network_info: Arc<NI>,
         group_worker_handle: EpollWorkerGroupHandle<CN>,
@@ -86,7 +86,9 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
 
         let conn_handler = Arc::new(ConnectionHandler::initialize(own_id, conn_counts.clone()));
 
-        let loopback = stub_controller.get_stub_for(&own_id).expect("Failed to get loopback stub");
+        let loopback = stub_controller
+            .get_stub_for(&own_id)
+            .expect("Failed to get loopback stub");
 
         Self {
             own_id,
@@ -111,7 +113,9 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
     }
 
     pub(crate) fn get_connection(&self, node: &NodeId) -> Option<Arc<PeerConn<CN>>> {
-        self.registered_connections.get(node).map(|entry| entry.value().clone())
+        self.registered_connections
+            .get(node)
+            .map(|entry| entry.value().clone())
     }
 
     fn is_connected_to_node(&self, node: &NodeId) -> bool {
@@ -143,7 +147,10 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
         let node_info = if node_info.is_none() {
             return Err!(ConnectionError::NodeInfoNotFound(node));
         } else {
-            match (self.network_info.own_node_info().node_type(), node_info.clone().unwrap().node_type()) {
+            match (
+                self.network_info.own_node_info().node_type(),
+                node_info.clone().unwrap().node_type(),
+            ) {
                 (NodeType::Client, NodeType::Client) => {
                     return Err!(ConnectionError::ClientCannotConnectToClient(node));
                 }
@@ -157,9 +164,10 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
             .map(|entry| entry.value().concurrent_connection_count())
             .unwrap_or(0);
 
-        let target_connections = self
-            .conn_counts
-            .get_connections_to_node(self.network_info.own_node_info().node_type(), node_info.node_type());
+        let target_connections = self.conn_counts.get_connections_to_node(
+            self.network_info.own_node_info().node_type(),
+            node_info.node_type(),
+        );
 
         let connections = if current_connections > target_connections {
             0
@@ -170,10 +178,11 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
         let mut result_vec = Vec::with_capacity(connections);
 
         for _ in 0..connections {
-            result_vec.push(
-                self.conn_handle
-                    .connect_to_node(Arc::clone(self), node, node_info.addr().clone())?,
-            )
+            result_vec.push(self.conn_handle.connect_to_node(
+                Arc::clone(self),
+                node,
+                node_info.addr().clone(),
+            )?)
         }
 
         Ok(result_vec)
@@ -199,12 +208,17 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
         Ok(())
     }
 
-
     /// Register a connection without having to provide any sockets, as this is meant to be done
     /// preemptively so there is no possibility for the connection details to be lost due to
     /// multi threading non atomic shenanigans
-    fn preemptive_conn_register(self: &Arc<Self>, node: NodeId, channel: (ChannelSyncTx<NetworkSerializedMessage>, ChannelSyncRx<NetworkSerializedMessage>))
-                                -> atlas_common::error::Result<Arc<PeerConn<CN>>> {
+    fn preemptive_conn_register(
+        self: &Arc<Self>,
+        node: NodeId,
+        channel: (
+            ChannelSyncTx<NetworkSerializedMessage>,
+            ChannelSyncRx<NetworkSerializedMessage>,
+        ),
+    ) -> atlas_common::error::Result<Arc<PeerConn<CN>>> {
         debug!("Preemptively registering connection to node {:?}", node);
 
         let option = self.registered_connections.entry(node);
@@ -214,7 +228,10 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
 
             let byte_stub = ByteMessageSendStub(channel.0.clone(), connections.clone());
 
-            let client_reception = self.stub_controller.generate_stub_for(node, byte_stub).expect("Failed to create reception client");
+            let client_reception = self
+                .stub_controller
+                .generate_stub_for(node, byte_stub)
+                .expect("Failed to create reception client");
 
             Arc::new(PeerConn::init(node, client_reception, connections, channel))
         });
@@ -223,10 +240,13 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
     }
 
     /// Handle a given socket having established the necessary connection
-    fn handle_connection_established(self: &Arc<Self>, node: NodeInfo,
-                                     socket: SecureSocket,
-                                     reading_info: ReadingBuffer,
-                                     writing_info: Option<WritingBuffer>) -> atlas_common::error::Result<()> {
+    fn handle_connection_established(
+        self: &Arc<Self>,
+        node: NodeInfo,
+        socket: SecureSocket,
+        reading_info: ReadingBuffer,
+        writing_info: Option<WritingBuffer>,
+    ) -> atlas_common::error::Result<()> {
         let socket = match socket {
             SecureSocket::Sync(sync) => match sync {
                 SecureSocketSync::Plain(socket) => socket,
@@ -235,18 +255,19 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
             _ => unreachable!(),
         };
 
-        let to_send_channel =
-            match self.registered_connections.get(&node.node_id()) {
-                None => {
-                    conn_util::initialize_send_channel()
-                }
-                Some(conn) => {
-                    conn.to_send.clone()
-                }
-            };
+        let to_send_channel = match self.registered_connections.get(&node.node_id()) {
+            None => conn_util::initialize_send_channel(),
+            Some(conn) => conn.to_send.clone(),
+        };
 
         // Cannot call this function while holding a reference to the registered connections map
-        self.handle_connection_established_with_socket(node, socket.into(), reading_info, writing_info, to_send_channel)?;
+        self.handle_connection_established_with_socket(
+            node,
+            socket.into(),
+            reading_info,
+            writing_info,
+            to_send_channel,
+        )?;
 
         Ok(())
     }
@@ -257,7 +278,10 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
         socket: MioSocket,
         reading_info: ReadingBuffer,
         writing_info: Option<WritingBuffer>,
-        channel: (ChannelSyncTx<NetworkSerializedMessage>, ChannelSyncRx<NetworkSerializedMessage>),
+        channel: (
+            ChannelSyncTx<NetworkSerializedMessage>,
+            ChannelSyncRx<NetworkSerializedMessage>,
+        ),
     ) -> atlas_common::error::Result<Arc<PeerConn<CN>>> {
         info!(
             "{:?} // Handling established connection to {:?}",
@@ -267,9 +291,7 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
         let other_node = node.clone();
 
         let peer_conn = match self.registered_connections.entry(node.node_id()) {
-            Entry::Occupied(conn) => {
-                conn.get().clone()
-            }
+            Entry::Occupied(conn) => conn.get().clone(),
             Entry::Vacant(vacant) => {
                 let connections = Arc::new(SkipMap::new());
 
@@ -279,7 +301,8 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
                     None => {
                         let byte_stub = ByteMessageSendStub(channel.0.clone(), connections.clone());
 
-                        self.stub_controller.generate_stub_for(node.node_id(), byte_stub)?
+                        self.stub_controller
+                            .generate_stub_for(node.node_id(), byte_stub)?
                     }
                     Some(_) => {
                         unreachable!("We should never have a stub for a node that we don't have a connection to")
@@ -293,7 +316,10 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
                     channel,
                 ));
 
-                debug!("{:?} // Creating new peer connection to {:?}.", self.own_id,other_node,);
+                debug!(
+                    "{:?} // Creating new peer connection to {:?}.",
+                    self.own_id, other_node,
+                );
 
                 vacant.insert(con.clone());
 
@@ -301,8 +327,10 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
             }
         };
 
-        let concurrency_level = self.conn_counts
-            .get_connections_to_node(self.network_info.own_node_info().node_type(), node.node_type());
+        let concurrency_level = self.conn_counts.get_connections_to_node(
+            self.network_info.own_node_info().node_type(),
+            node.node_type(),
+        );
 
         let conn_id = peer_conn.gen_conn_id();
 
@@ -333,8 +361,15 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
         //FIXME: This isn't really an atomic operation but I also don't care LOL.
         peer_conn.register_peer_conn_intent(conn_id);
 
-        let conn_details =
-            NewConnection::new(conn_id, node.node_id(), self.own_id, socket, reading_info, writing_info, peer_conn.clone());
+        let conn_details = NewConnection::new(
+            conn_id,
+            node.node_id(),
+            self.own_id,
+            socket,
+            reading_info,
+            writing_info,
+            peer_conn.clone(),
+        );
 
         // We don't register the connection here as we still need some information that will only be provided
         // to us by the worker that will handle the connection.
@@ -371,9 +406,11 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
 }
 
 impl<NI, IS, CNP> NetworkConnectionController for Connections<NI, IS, CNP>
-    where NI: NetworkInformationProvider + 'static,
-          IS: NodeIncomingStub + 'static,
-          CNP: NodeStubController<ByteMessageSendStub, IS> + 'static {
+where
+    NI: NetworkInformationProvider + 'static,
+    IS: NodeIncomingStub + 'static,
+    CNP: NodeStubController<ByteMessageSendStub, IS> + 'static,
+{
     fn has_connection(&self, node: &NodeId) -> bool {
         self.is_connected_to_node(node)
     }
@@ -386,7 +423,10 @@ impl<NI, IS, CNP> NetworkConnectionController for Connections<NI, IS, CNP>
         self.connected_nodes()
     }
 
-    fn connect_to_node(self: &Arc<Self>, node: NodeId) -> atlas_common::error::Result<Vec<OneShotRx<atlas_common::error::Result<()>>>> {
+    fn connect_to_node(
+        self: &Arc<Self>,
+        node: NodeId,
+    ) -> atlas_common::error::Result<Vec<OneShotRx<atlas_common::error::Result<()>>>> {
         let conn_results = self.internal_connect_to_node(node)?;
 
         Ok(conn_results)
@@ -397,12 +437,16 @@ impl<NI, IS, CNP> NetworkConnectionController for Connections<NI, IS, CNP>
     }
 }
 
-
 impl<ST> PeerConn<ST> {
-    pub fn init(connected_peer_id: NodeId,
-                byte_input_stub: ST,
-                connections: Arc<SkipMap<u32, Option<ConnHandle>>>,
-                channel: (ChannelSyncTx<NetworkSerializedMessage>, ChannelSyncRx<NetworkSerializedMessage>)) -> Self {
+    pub fn init(
+        connected_peer_id: NodeId,
+        byte_input_stub: ST,
+        connections: Arc<SkipMap<u32, Option<ConnHandle>>>,
+        channel: (
+            ChannelSyncTx<NetworkSerializedMessage>,
+            ChannelSyncRx<NetworkSerializedMessage>,
+        ),
+    ) -> Self {
         Self {
             connected_peer_id,
             byte_input_stub,
@@ -433,12 +477,19 @@ impl<ST> PeerConn<ST> {
     }
 
     /// Take a message from the send queue (blocking)
-    pub(super) fn take_from_to_send(&self) -> atlas_common::error::Result<NetworkSerializedMessage> {
-        self.to_send.1.recv().context("Failed to take message from send queue")
+    pub(super) fn take_from_to_send(
+        &self,
+    ) -> atlas_common::error::Result<NetworkSerializedMessage> {
+        self.to_send
+            .1
+            .recv()
+            .context("Failed to take message from send queue")
     }
 
     /// Attempt to take a message from the send queue (non blocking)
-    pub(super) fn try_take_from_send(&self) -> atlas_common::error::Result<Option<NetworkSerializedMessage>> {
+    pub(super) fn try_take_from_send(
+        &self,
+    ) -> atlas_common::error::Result<Option<NetworkSerializedMessage>> {
         match self.to_send.1.try_recv() {
             Ok(msg) => Ok(Some(msg)),
             Err(err) => match err {
@@ -475,7 +526,10 @@ pub struct ConnHandle {
 
 /// A handle to a connection that is being established
 ///
-pub struct ByteMessageSendStub(ChannelSyncTx<WireMessage>, Arc<SkipMap<u32, Option<ConnHandle>>>);
+pub struct ByteMessageSendStub(
+    ChannelSyncTx<WireMessage>,
+    Arc<SkipMap<u32, Option<ConnHandle>>>,
+);
 
 impl byte_stub::ByteNetworkStub for ByteMessageSendStub {
     fn dispatch_message(&self, message: WireMessage) -> atlas_common::error::Result<()> {
@@ -522,11 +576,10 @@ impl ConnHandle {
     }
 }
 
-
 #[derive(Error, Debug)]
 pub enum MioError {
     #[error("Failed to retrieve message from the send queue")]
-    FailedToRetrieveFromSendQueue
+    FailedToRetrieveFromSendQueue,
 }
 
 #[derive(Error, Debug)]

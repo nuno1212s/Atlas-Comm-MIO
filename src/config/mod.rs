@@ -7,7 +7,7 @@ pub struct MIOConfig {
     #[get_copy = "pub"]
     pub epoll_worker_count: u32,
     #[get = "pub"]
-    pub tcp_configs: TcpConfig
+    pub tcp_configs: TcpConfig,
 }
 
 /// The TLS config struct
@@ -28,5 +28,5 @@ pub struct TcpConfig {
     /// How many concurrent connections should be established between replica nodes of the system
     pub replica_concurrent_connections: usize,
     /// How many client concurrent connections should be established between replica <-> client connections
-    pub client_concurrent_connections: usize
+    pub client_concurrent_connections: usize,
 }
