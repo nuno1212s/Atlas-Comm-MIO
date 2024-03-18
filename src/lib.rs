@@ -11,8 +11,7 @@ use atlas_common::node_id::NodeId;
 use atlas_common::socket;
 use atlas_common::socket::SyncListener;
 use atlas_communication::byte_stub::{
-    ByteNetworkController, ByteNetworkControllerInit, NodeIncomingStub,
-    NodeStubController,
+    ByteNetworkController, ByteNetworkControllerInit, NodeIncomingStub, NodeStubController,
 };
 use atlas_communication::reconfiguration::NetworkInformationProvider;
 

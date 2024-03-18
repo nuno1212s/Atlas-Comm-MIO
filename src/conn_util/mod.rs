@@ -1,6 +1,6 @@
 use crate::config::TcpConfig;
 use atlas_common::channel::{ChannelSyncRx, ChannelSyncTx};
-use atlas_common::node_id::{NodeType};
+use atlas_common::node_id::NodeType;
 use atlas_common::socket::MioSocket;
 use atlas_common::{channel, Err};
 use atlas_communication::lookup_table::MessageModule;

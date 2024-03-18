@@ -23,14 +23,12 @@ use atlas_common::{channel, prng, quiet_unwrap, socket, Err};
 use atlas_communication::byte_stub::{NodeIncomingStub, NodeStubController};
 use atlas_communication::lookup_table::MessageModule;
 use atlas_communication::message::{Header, NetworkSerializedMessage, WireMessage};
-use atlas_communication::reconfiguration::{
-    NetworkInformationProvider, NodeInfo,
-};
+use atlas_communication::reconfiguration::{NetworkInformationProvider, NodeInfo};
 
 use crate::conn_util;
 use crate::conn_util::{
-    interrupted, would_block, ConnCounts, ConnectionReadWork,
-    ConnectionWriteWork, ReadingBuffer, WritingBuffer,
+    interrupted, would_block, ConnCounts, ConnectionReadWork, ConnectionWriteWork, ReadingBuffer,
+    WritingBuffer,
 };
 use crate::connections::{ByteMessageSendStub, Connections};
 
@@ -512,7 +510,6 @@ where
                     | ConnectionReadWork::ReceivedAndDone(received) => {
                         let connection_peer_id = if let Some(message) = received.first() {
                             let header = message.header();
-                            
 
                             header.from()
                         } else {

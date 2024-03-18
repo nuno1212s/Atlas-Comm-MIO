@@ -418,7 +418,6 @@ where
 
         match connection {
             SocketConnection::PeerConn {
-                
                 socket,
                 reading_info,
                 connection,

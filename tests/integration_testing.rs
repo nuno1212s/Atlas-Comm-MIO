@@ -49,8 +49,8 @@ struct MockStub(MockStubInput, MockStubOutput);
 
 impl NodeIncomingStub for MockStubInput {
     fn handle_message<NI>(&self, _network_info: &Arc<NI>, message: WireMessage) -> Result<()>
-        where
-            NI: NetworkInformationProvider + 'static,
+    where
+        NI: NetworkInformationProvider + 'static,
     {
         debug!("{:?} // Received message: {:?}", self.0, message.header());
 
@@ -63,8 +63,6 @@ impl MockStubController {
         let (tx, rx) = channel::new_bounded_sync(32, Some("MockStubController"));
         let stubs = Arc::new(Mutex::new(Default::default()));
 
-        
-
         Self {
             node_id,
             stubs,
@@ -75,7 +73,7 @@ impl MockStubController {
 
     fn create_stub_for(&self, node: NodeId) -> MockStubInput {
         let tx = self.input_tx.clone();
-        
+
         MockStubInput(node, tx)
     }
 
@@ -250,7 +248,9 @@ impl NetworkInformationProvider for MockNetworkInfo {
     }
 
     fn get_node_info(&self, node: &NodeId) -> Option<reconfiguration::NodeInfo> {
-        self.other_nodes.get(node).map(|info| info.node_info.clone())
+        self.other_nodes
+            .get(node)
+            .map(|info| info.node_info.clone())
     }
 }
 
@@ -269,11 +269,15 @@ impl MockNetworkInfoFactory {
             let key = KeyPair::from_bytes(buf.as_slice())?;
 
             let info = NodeInfo {
-                node_info: reconfiguration::NodeInfo::new(NodeId::from(node_id as u32), NodeType::Replica, PublicKey::from(key.public_key()),
-                                                          PeerAddr::new(
-                                                              format!("127.0.0.1:{}", Self::PORT + (node_id as u32)).parse()?,
-                                                              String::from("localhost"),
-                                                          )),
+                node_info: reconfiguration::NodeInfo::new(
+                    NodeId::from(node_id as u32),
+                    NodeType::Replica,
+                    PublicKey::from(key.public_key()),
+                    PeerAddr::new(
+                        format!("127.0.0.1:{}", Self::PORT + (node_id as u32)).parse()?,
+                        String::from("localhost"),
+                    ),
+                ),
                 key: Arc::new(key),
             };
 
@@ -418,10 +422,13 @@ mod conn_test {
                     .connection_controller()
                     .connect_to_node(other_node_id)?
                 {
-                    result_wait.recv()
+                    result_wait
+                        .recv()
                         .unwrap()
-                        .context(format!("Failed to receive result of connecting to node {:?}",
-                                         other_node_id))
+                        .context(format!(
+                            "Failed to receive result of connecting to node {:?}",
+                            other_node_id
+                        ))
                         .unwrap();
                 }
             }
@@ -464,14 +471,13 @@ mod conn_test {
             .connect_to_node(node_1_id);
 
         result.into_iter().for_each(|result| {
-            result.into_iter()
-                .for_each(|result| {
-                    result
-                        .recv()
-                        .unwrap()
-                        .context("Failed to receive result of connecting to node 1")
-                        .unwrap();
-                });
+            result.into_iter().for_each(|result| {
+                result
+                    .recv()
+                    .unwrap()
+                    .context("Failed to receive result of connecting to node 1")
+                    .unwrap();
+            });
         });
 
         let node = nodes.get(&node_0_id).unwrap();
