@@ -20,16 +20,16 @@ use atlas_common::node_id::{NodeId, NodeType};
 use atlas_common::peer_addr::PeerAddr;
 use atlas_common::socket::{MioListener, MioSocket, SecureSocket, SecureSocketSync, SyncListener};
 use atlas_common::{channel, prng, quiet_unwrap, socket, Err};
-use atlas_communication::byte_stub::{ByteNetworkStub, NodeIncomingStub, NodeStubController};
+use atlas_communication::byte_stub::{NodeIncomingStub, NodeStubController};
 use atlas_communication::lookup_table::MessageModule;
 use atlas_communication::message::{Header, NetworkSerializedMessage, WireMessage};
 use atlas_communication::reconfiguration::{
-    NetworkInformationProvider, NetworkUpdateMessage, NodeInfo,
+    NetworkInformationProvider, NodeInfo,
 };
 
 use crate::conn_util;
 use crate::conn_util::{
-    interrupted, try_write_until_block, would_block, ConnCounts, ConnectionReadWork,
+    interrupted, would_block, ConnCounts, ConnectionReadWork,
     ConnectionWriteWork, ReadingBuffer, WritingBuffer,
 };
 use crate::connections::{ByteMessageSendStub, Connections};
@@ -105,14 +105,14 @@ where
     ) -> Result<Self> {
         let mut slab = Slab::with_capacity(DEFAULT_ALLOWED_CONCURRENT_JOINS);
 
-        let mut poll = Poll::new()?;
+        let poll = Poll::new()?;
 
         let (waker, waker_token) = {
             let entry = slab.vacant_entry();
 
             let waker_token = Token(entry.key());
 
-            let waker = Waker::new(poll.registry(), waker_token.clone())?;
+            let waker = Waker::new(poll.registry(), waker_token)?;
 
             entry.insert(PendingConnection::Waker);
 
@@ -163,7 +163,7 @@ where
                         self.handle_write_request()?;
                     }
                     token => {
-                        let result = self.handle_connection_ev(token, &event)?;
+                        let result = self.handle_connection_ev(token, event)?;
 
                         self.handle_connection_result(token, result)?;
                     }
@@ -269,7 +269,7 @@ where
                 let node = if let Some(first_msg) = pending_messages.pop() {
                     let node_info = first_msg.payload_buf();
 
-                    let (node_info, read): (NodeInfo, usize) = bincode::serde::decode_from_slice(
+                    let (node_info, _read): (NodeInfo, usize) = bincode::serde::decode_from_slice(
                         node_info.as_ref(),
                         bincode::config::standard(),
                     )?;
@@ -298,7 +298,7 @@ where
                         .collect::<Vec<_>>()
                 );
 
-                if let Some(mut connection) = self.currently_accepting.try_remove(token.into()) {
+                if let Some(connection) = self.currently_accepting.try_remove(token.into()) {
                     match connection {
                         PendingConnection::PendingConn {
                             mut socket,
@@ -339,7 +339,7 @@ where
                 );
 
                 // Discard of the connection since it has been broken
-                if let Some(mut connection) = self.currently_accepting.try_remove(token.into()) {
+                if let Some(connection) = self.currently_accepting.try_remove(token.into()) {
                     match connection {
                         PendingConnection::PendingConn { mut socket, .. } => {
                             self.poll.registry().deregister(&mut socket)?;
@@ -512,9 +512,9 @@ where
                     | ConnectionReadWork::ReceivedAndDone(received) => {
                         let connection_peer_id = if let Some(message) = received.first() {
                             let header = message.header();
-                            let connection_peer_id = header.from();
+                            
 
-                            connection_peer_id
+                            header.from()
                         } else {
                             trace!("Received empty message from {:?}", token);
 
@@ -615,11 +615,11 @@ impl ConnectionHandler {
         let mut connection_guard = self.currently_connecting.lock().unwrap();
 
         connection_guard
-            .entry(peer_id.clone())
+            .entry(*peer_id)
             .and_modify(|value| *value -= 1);
 
         if let Some(connection_count) = connection_guard.get(peer_id) {
-            if *connection_count <= 0 {
+            if *connection_count == 0 {
                 connection_guard.remove(peer_id);
             }
         }
@@ -706,14 +706,14 @@ impl ConnectionHandler {
 
                             let write_info = WritingBuffer::init_from_message(wm).unwrap();
 
-                            if let Err(err) = sock.write_all(&write_info.current_header().as_ref().unwrap()) {
+                            if let Err(err) = sock.write_all(write_info.current_header().as_ref().unwrap()) {
                                 warn!("{:?} // Error while writing header on connecting to {:?} addr {:?}: {:?}",
                                     conn_handler.my_id(), peer_id, addr, err);
 
                                 continue;
                             }
 
-                            match sock.write(&write_info.message_module().as_ref().unwrap()) {
+                            match sock.write(write_info.message_module().as_ref().unwrap()) {
                                 Ok(size) => {
                                     trace!("{:?} // Wrote {:?} bytes for message module while initializing connection", conn_handler.my_id(), size);
                                 }
@@ -725,7 +725,7 @@ impl ConnectionHandler {
                                 }
                             }
 
-                            if let Err(err) = sock.write_all(&write_info.current_message()) {
+                            if let Err(err) = sock.write_all(write_info.current_message()) {
                                 warn!("{:?} // Error while writing payload on connecting to {:?} addr {:?}: {:?}",
                                     conn_handler.my_id(), peer_id, addr, err);
 
@@ -800,7 +800,7 @@ where
     CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
 {
     let server_worker = ServerWorker::new(
-        my_id.clone(),
+        my_id,
         listener.into(),
         connection_handler.clone(),
         network_info,

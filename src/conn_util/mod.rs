@@ -1,11 +1,11 @@
 use crate::config::TcpConfig;
 use atlas_common::channel::{ChannelSyncRx, ChannelSyncTx};
-use atlas_common::node_id::{NodeId, NodeType};
+use atlas_common::node_id::{NodeType};
 use atlas_common::socket::MioSocket;
 use atlas_common::{channel, Err};
 use atlas_communication::lookup_table::MessageModule;
 use atlas_communication::message::{Header, WireMessage};
-use atlas_communication::reconfiguration::{NetworkInformationProvider, NodeInfo};
+
 use bytes::{Buf, Bytes, BytesMut};
 use getset::Getters;
 use log::{debug, trace, warn};
@@ -13,7 +13,7 @@ use std::io;
 use std::io::{Read, Write};
 use std::mem::size_of;
 
-pub type Callback = Option<Box<dyn FnOnce(bool) -> () + Send>>;
+pub type Callback = Option<Box<dyn FnOnce(bool) + Send>>;
 
 /// The amount of parallel TCP connections we should try to maintain for
 /// each connection
@@ -33,10 +33,10 @@ impl ConnCounts {
 
     /// How many connections should we maintain with a given node
     pub(crate) fn get_connections_to_node(&self, my_type: NodeType, other_type: NodeType) -> usize {
-        return match (my_type, other_type) {
+        match (my_type, other_type) {
             (NodeType::Replica, NodeType::Replica) => self.replica_connections,
             _ => self.client_connections,
-        };
+        }
     }
 }
 
@@ -93,7 +93,7 @@ fn attempt_to_write_bytes_until_block(
     buffer: &Bytes,
 ) -> atlas_common::error::Result<InternalWorkResult> {
     match socket.write(&buffer[*written_bytes..]) {
-        Ok(0) => return Ok(InternalWorkResult::ConnectionBroken),
+        Ok(0) => Ok(InternalWorkResult::ConnectionBroken),
         Ok(n) => {
             // We have successfully written n bytes
             if n + *written_bytes < buffer.len() {
@@ -114,7 +114,7 @@ fn attempt_to_write_bytes_until_block(
         }
         Err(err) if interrupted(&err) => Ok(InternalWorkResult::Interrupted),
         Err(err) => {
-            return Err!(err);
+            Err!(err)
         }
     }
 }
@@ -224,7 +224,7 @@ pub(crate) fn read_until_block(
         if let Some(header) = &read_info.current_header {
             // We have already read the header of the message
 
-            if let Some(_) = &read_info.message_module {
+            if read_info.message_module.is_some() {
                 // We have already read the module of the message, so
                 // We are currently reading a message
                 let currently_read = read_info.read_bytes;
@@ -262,9 +262,9 @@ pub(crate) fn read_until_block(
                 };
 
                 if read >= bytes_to_read {
-                    let header = std::mem::replace(&mut read_info.current_header, None).unwrap();
+                    let header = read_info.current_header.take().unwrap();
 
-                    let module = std::mem::replace(&mut read_info.message_module, None).unwrap();
+                    let module = read_info.message_module.take().unwrap();
 
                     let message = read_info.reading_buffer.split_to(header.payload_length());
 
@@ -379,7 +379,7 @@ pub(crate) fn read_until_block(
             if read >= bytes_to_read {
                 let header = Header::deserialize_from(&read_info.reading_buffer[..Header::LENGTH])?;
 
-                *(&mut read_info.current_header) = Some(header);
+                read_info.current_header = Some(header);
 
                 if read > bytes_to_read {
                     //TODO: This will never happen since our buffer is HEADER::LENGTH sized
@@ -457,7 +457,7 @@ impl WritingBuffer {
 
         mod_bytes.resize(size_of::<MessageModule>(), 0);
 
-        bincode::serde::encode_into_slice(&module, &mut mod_bytes, bincode::config::standard())?;
+        bincode::serde::encode_into_slice(module, &mut mod_bytes, bincode::config::standard())?;
 
         Ok(Self {
             written_bytes: 0,

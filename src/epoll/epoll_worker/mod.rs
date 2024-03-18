@@ -9,8 +9,8 @@ use atlas_common::channel::ChannelSyncRx;
 use atlas_common::node_id::NodeId;
 use atlas_common::socket::MioSocket;
 use atlas_common::Err;
-use atlas_communication::byte_stub::{ByteNetworkStub, NodeIncomingStub, NodeStubController};
-use atlas_communication::message::WireMessage;
+use atlas_communication::byte_stub::{NodeIncomingStub, NodeStubController};
+
 use atlas_communication::reconfiguration::NetworkInformationProvider;
 use log::{debug, error, info, trace};
 use mio::event::Event;
@@ -206,7 +206,7 @@ where
                         continue;
                     }
 
-                    match self.handle_connection_event(token, &event) {
+                    match self.handle_connection_event(token, event) {
                         Ok(ConnectionWorkResult::ConnectionBroken) => {
                             let peer_id = {
                                 let connection = &self.connections[token.into()];
@@ -255,7 +255,7 @@ where
         token: Token,
         event: &Event,
     ) -> atlas_common::error::Result<ConnectionWorkResult> {
-        let connection = if self.connections.contains(token.into()) {
+        let _connection = if self.connections.contains(token.into()) {
             &self.connections[token.into()]
         } else {
             error!(
@@ -418,7 +418,7 @@ where
 
         match connection {
             SocketConnection::PeerConn {
-                handle,
+                
                 socket,
                 reading_info,
                 connection,
@@ -469,7 +469,7 @@ where
                         }
                     }
                 }
-                Err(err) => {
+                Err(_err) => {
                     // No more connections are ready to be accepted
                     break;
                 }

@@ -4,19 +4,19 @@ use crate::conn_util;
 use crate::conn_util::{ConnCounts, ReadingBuffer, WritingBuffer};
 use crate::connections::conn_establish::{ConnectionEstablishError, ConnectionHandler};
 use crate::epoll::{EpollWorkerGroupHandle, EpollWorkerId, NewConnection};
-use anyhow::{anyhow, Context};
+use anyhow::{Context};
 use atlas_common::channel::{ChannelSyncRx, ChannelSyncTx, OneShotRx, TryRecvError};
 use atlas_common::node_id::{NodeId, NodeType};
 use atlas_common::socket::{MioSocket, SecureSocket, SecureSocketSync, SyncListener};
-use atlas_common::{channel, Err};
+use atlas_common::{Err};
 use atlas_communication::byte_stub;
 use atlas_communication::byte_stub::connections::NetworkConnectionController;
-use atlas_communication::byte_stub::{ByteNetworkController, NodeIncomingStub, NodeStubController};
+use atlas_communication::byte_stub::{NodeIncomingStub, NodeStubController};
 use atlas_communication::message::{NetworkSerializedMessage, WireMessage};
 use atlas_communication::reconfiguration::{NetworkInformationProvider, NodeInfo};
 use crossbeam_skiplist::SkipMap;
 use dashmap::mapref::entry::Entry;
-use dashmap::mapref::one::Ref;
+
 use dashmap::DashMap;
 use getset::{CopyGetters, Getters};
 use log::{debug, error, info, warn};
@@ -104,7 +104,7 @@ where
 
     pub(super) fn setup_tcp_worker(self: &Arc<Self>, listener: SyncListener) {
         let _waker = conn_establish::initialize_server(
-            self.own_id.clone(),
+            self.own_id,
             listener,
             self.conn_handle.clone(),
             self.network_info.clone(),
@@ -129,7 +129,7 @@ where
     fn connected_nodes(&self) -> Vec<NodeId> {
         self.registered_connections
             .iter()
-            .map(|entry| entry.key().clone())
+            .map(|entry| *entry.key())
             .collect()
     }
 
@@ -193,7 +193,7 @@ where
 
         self.stub_controller.shutdown_stubs_for(node);
 
-        if let Some((node, connection)) = existing_connection {
+        if let Some((_node, connection)) = existing_connection {
             for entry in connection.connections.iter() {
                 if let Some(conn) = entry.value() {
                     let worker_id = conn.epoll_worker_id;
@@ -250,7 +250,7 @@ where
         let socket = match socket {
             SecureSocket::Sync(sync) => match sync {
                 SecureSocketSync::Plain(socket) => socket,
-                SecureSocketSync::Tls(tls, socket) => socket,
+                SecureSocketSync::Tls(_tls, socket) => socket,
             },
             _ => unreachable!(),
         };
@@ -377,7 +377,7 @@ where
         self.group_worker_handle
             .assign_socket_to_worker(conn_details)?;
 
-        return Ok(peer_conn.clone());
+        Ok(peer_conn.clone())
     }
 
     /// Handle a connection having broken and being removed from the worker

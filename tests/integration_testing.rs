@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::iter;
-use std::str::FromStr;
+
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context};
@@ -20,8 +20,9 @@ use atlas_common::crypto::signature::{KeyPair, PublicKey};
 use atlas_common::error::*;
 use atlas_common::node_id::{NodeId, NodeType};
 use atlas_common::peer_addr::PeerAddr;
-use atlas_communication::byte_stub::{ByteNetworkStub, NodeIncomingStub, NodeStubController};
+use atlas_communication::byte_stub::{NodeIncomingStub, NodeStubController};
 use atlas_communication::message::WireMessage;
+use atlas_communication::reconfiguration;
 use atlas_communication::reconfiguration::NetworkInformationProvider;
 
 #[derive(Clone, Getters)]
@@ -47,9 +48,9 @@ struct MockStubOutput(NodeId, ByteStubType);
 struct MockStub(MockStubInput, MockStubOutput);
 
 impl NodeIncomingStub for MockStubInput {
-    fn handle_message<NI>(&self, network_info: &Arc<NI>, message: WireMessage) -> Result<()>
-    where
-        NI: NetworkInformationProvider + 'static,
+    fn handle_message<NI>(&self, _network_info: &Arc<NI>, message: WireMessage) -> Result<()>
+        where
+            NI: NetworkInformationProvider + 'static,
     {
         debug!("{:?} // Received message: {:?}", self.0, message.header());
 
@@ -62,20 +63,20 @@ impl MockStubController {
         let (tx, rx) = channel::new_bounded_sync(32, Some("MockStubController"));
         let stubs = Arc::new(Mutex::new(Default::default()));
 
-        let controller = Self {
+        
+
+        Self {
             node_id,
             stubs,
             input_tx: tx,
             input_rx: rx,
-        };
-
-        controller
+        }
     }
 
     fn create_stub_for(&self, node: NodeId) -> MockStubInput {
         let tx = self.input_tx.clone();
-        let stub = MockStubInput(node, tx);
-        stub
+        
+        MockStubInput(node, tx)
     }
 
     fn output_stub_for(&self, node: &NodeId) -> Option<MockStubOutput> {
@@ -106,7 +107,7 @@ impl NodeStubController<ByteStubType, MockStubInput> for MockStubController {
 
     fn get_stub_for(&self, node: &NodeId) -> Option<MockStubInput> {
         if self.node_id == *node {
-            return Some(MockStubInput(node.clone(), self.input_tx.clone()));
+            return Some(MockStubInput(*node, self.input_tx.clone()));
         }
 
         self.stubs
@@ -229,13 +230,8 @@ fn default_config(node: u32) -> Result<MIOConfig> {
 
 #[derive(Getters, Clone)]
 #[get = "pub(crate)"]
-pub struct NodeInfo<K>
-where
-    K: Clone,
-{
-    id: NodeId,
-    addr: PeerAddr,
-    node_type: NodeType,
+pub struct NodeInfo<K> {
+    node_info: reconfiguration::NodeInfo,
     key: K,
 }
 
@@ -245,32 +241,16 @@ pub struct MockNetworkInfo {
 }
 
 impl NetworkInformationProvider for MockNetworkInfo {
-    fn get_own_id(&self) -> NodeId {
-        self.own_node.id
-    }
-
-    fn get_own_addr(&self) -> PeerAddr {
-        self.own_node.addr.clone()
+    fn own_node_info(&self) -> &reconfiguration::NodeInfo {
+        &self.own_node.node_info
     }
 
     fn get_key_pair(&self) -> &Arc<KeyPair> {
         &self.own_node.key
     }
 
-    fn get_own_node_type(&self) -> NodeType {
-        self.own_node.node_type
-    }
-
-    fn get_node_type(&self, node: &NodeId) -> Option<NodeType> {
-        self.other_nodes.get(node).map(|info| info.node_type)
-    }
-
-    fn get_public_key(&self, node: &NodeId) -> Option<PublicKey> {
-        self.other_nodes.get(node).map(|info| info.key.clone())
-    }
-
-    fn get_addr_for_node(&self, node: &NodeId) -> Option<PeerAddr> {
-        self.other_nodes.get(node).map(|info| info.addr.clone())
+    fn get_node_info(&self, node: &NodeId) -> Option<reconfiguration::NodeInfo> {
+        self.other_nodes.get(node).map(|info| info.node_info.clone())
     }
 }
 
@@ -281,7 +261,7 @@ struct MockNetworkInfoFactory {
 impl MockNetworkInfoFactory {
     const PORT: u32 = 10000;
 
-    fn initialize_for(node_count: usize) -> Result<Self> {
+    fn initialize_for(node_count: usize) -> atlas_common::error::Result<Self> {
         let buf = [0; 32];
         let mut map = BTreeMap::default();
 
@@ -289,22 +269,24 @@ impl MockNetworkInfoFactory {
             let key = KeyPair::from_bytes(buf.as_slice())?;
 
             let info = NodeInfo {
-                id: NodeId::from(node_id as u32),
-                addr: PeerAddr::new(
-                    format!("127.0.0.1:{}", Self::PORT + (node_id as u32)).parse()?,
-                    String::from("localhost"),
-                ),
-                node_type: NodeType::Replica,
+                node_info: reconfiguration::NodeInfo::new(NodeId::from(node_id as u32), NodeType::Replica, PublicKey::from(key.public_key()),
+                                                          PeerAddr::new(
+                                                              format!("127.0.0.1:{}", Self::PORT + (node_id as u32)).parse()?,
+                                                              String::from("localhost"),
+                                                          )),
                 key: Arc::new(key),
             };
 
-            map.insert(info.id.clone(), info);
+            map.insert(info.node_info.node_id(), info);
         }
 
         Ok(Self { nodes: map })
     }
 
-    fn generate_network_info_for(&self, node_id: NodeId) -> Result<MockNetworkInfo> {
+    fn generate_network_info_for(
+        &self,
+        node_id: NodeId,
+    ) -> atlas_common::error::Result<MockNetworkInfo> {
         let own_network_id = self
             .nodes
             .get(&node_id)
@@ -317,11 +299,9 @@ impl MockNetworkInfoFactory {
             .filter(|(id, _)| **id != node_id)
             .map(|(id, info)| {
                 (
-                    id.clone(),
+                    *id,
                     NodeInfo {
-                        id: info.id.clone(),
-                        addr: info.addr.clone(),
-                        node_type: info.node_type,
+                        node_info: info.node_info.clone(),
                         key: PublicKey::from(info.key.public_key()),
                     },
                 )
@@ -372,7 +352,7 @@ mod conn_test {
             // Initialize all of the nodes
             let node = NodeId::from(node);
 
-            let reconf = ReconfigurationMessageHandler::initialize();
+            let _reconf = ReconfigurationMessageHandler::initialize();
 
             let network_info = factory.generate_network_info_for(node)?;
 
@@ -400,7 +380,7 @@ mod conn_test {
 
         println!("Mod bytes {:x?}", mod_bytes);
 
-        let (de_ser_msg_mod, msg_mod_size): (MessageModule, usize) =
+        let (de_ser_msg_mod, _msg_mod_size): (MessageModule, usize) =
             bincode::serde::decode_borrowed_from_slice(
                 mod_bytes.as_ref(),
                 bincode::config::standard(),
@@ -436,12 +416,13 @@ mod conn_test {
 
                 for result_wait in node_ref
                     .connection_controller()
-                    .connect_to_node(other_node_id)
+                    .connect_to_node(other_node_id)?
                 {
-                    result_wait.recv().unwrap().context(format!(
-                        "Failed to receive result of connecting to node {:?}",
-                        other_node_id
-                    ))?;
+                    result_wait.recv()
+                        .unwrap()
+                        .context(format!("Failed to receive result of connecting to node {:?}",
+                                         other_node_id))
+                        .unwrap();
                 }
             }
         }
@@ -483,11 +464,14 @@ mod conn_test {
             .connect_to_node(node_1_id);
 
         result.into_iter().for_each(|result| {
-            result
-                .recv()
-                .unwrap()
-                .context("Failed to receive result of connecting to node 1")
-                .unwrap();
+            result.into_iter()
+                .for_each(|result| {
+                    result
+                        .recv()
+                        .unwrap()
+                        .context("Failed to receive result of connecting to node 1")
+                        .unwrap();
+                });
         });
 
         let node = nodes.get(&node_0_id).unwrap();
@@ -507,12 +491,12 @@ mod conn_test {
             .ok_or(anyhow!("Failed to get output stub for node 1"))?;
 
         let wire_msg = WireMessage::new(
-            node_0_id.clone(),
-            node_1_id.clone(),
+            node_0_id,
+            node_1_id,
             MessageModule::Reconfiguration,
             msg.clone(),
             0,
-            Some(digest.clone()),
+            Some(digest),
             None,
         );
 

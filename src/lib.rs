@@ -11,7 +11,7 @@ use atlas_common::node_id::NodeId;
 use atlas_common::socket;
 use atlas_common::socket::SyncListener;
 use atlas_communication::byte_stub::{
-    ByteNetworkController, ByteNetworkControllerInit, ByteNetworkStub, NodeIncomingStub,
+    ByteNetworkController, ByteNetworkControllerInit, NodeIncomingStub,
     NodeStubController,
 };
 use atlas_communication::reconfiguration::NetworkInformationProvider;
@@ -51,8 +51,8 @@ where
     CNP: Clone,
     NI: NetworkInformationProvider,
 {
-    fn setup_connection(id: &NodeId, server_addr: &SocketAddr) -> Result<SyncListener> {
-        socket::bind_sync_server(server_addr.clone()).context(format!(
+    fn setup_connection(_id: &NodeId, server_addr: &SocketAddr) -> Result<SyncListener> {
+        socket::bind_sync_server(*server_addr).context(format!(
             "Failed to setup connection with socket {:?}",
             server_addr
         ))
