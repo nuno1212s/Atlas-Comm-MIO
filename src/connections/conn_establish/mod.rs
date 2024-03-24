@@ -1,3 +1,5 @@
+#![allow(clippy::large_enum_variant)]
+
 use anyhow::anyhow;
 use std::collections::BTreeMap;
 use std::fmt::{Debug, Formatter};
@@ -65,8 +67,8 @@ enum PendingConnection {
 }
 
 pub struct ServerWorker<NI, IS, CNP>
-where
-    NI: NetworkInformationProvider,
+    where
+        NI: NetworkInformationProvider,
 {
     my_id: NodeId,
     listener: MioListener,
@@ -89,10 +91,10 @@ enum ConnectionResult {
 }
 
 impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
-where
-    NI: NetworkInformationProvider + 'static,
-    CN: NodeIncomingStub + 'static,
-    CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
+    where
+        NI: NetworkInformationProvider + 'static,
+        CN: NodeIncomingStub + 'static,
+        CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
 {
     pub fn new(
         my_id: NodeId,
@@ -248,12 +250,9 @@ where
         to_verify.into_iter().for_each(|token| {
             let connection_result = self.try_write_until_block(token).expect("Failed to write");
 
-            match &connection_result {
-                ConnectionResult::Connected(_, _) => {
-                    self.handle_connection_result(token, connection_result)
-                        .expect("Failed to write");
-                }
-                _ => {}
+            if let ConnectionResult::Connected(_, _) = &connection_result {
+                self.handle_connection_result(token, connection_result)
+                    .expect("Failed to write");
             }
         });
 
@@ -579,8 +578,8 @@ impl ConnectionHandler {
     /// We may not be able to connect to a given node if the amount of connections
     /// being established already overtakes the limit of concurrent connections
     fn register_connecting_to_node<NI>(&self, peer_id: NodeId, network_info: &NI) -> bool
-    where
-        NI: NetworkInformationProvider,
+        where
+            NI: NetworkInformationProvider,
     {
         let mut connecting_guard = self.currently_connecting.lock().unwrap();
 
@@ -595,9 +594,9 @@ impl ConnectionHandler {
 
         if *value
             > self
-                .concurrent_conn
-                .get_connections_to_node(network_info.own_node_info().node_type(), other_node_type)
-                * 2
+            .concurrent_conn
+            .get_connections_to_node(network_info.own_node_info().node_type(), other_node_type)
+            * 2
         {
             *value -= 1;
 
@@ -628,10 +627,10 @@ impl ConnectionHandler {
         peer_id: NodeId,
         addr: PeerAddr,
     ) -> std::result::Result<OneShotRx<Result<()>>, ConnectionEstablishError>
-    where
-        NI: NetworkInformationProvider + 'static,
-        CN: NodeIncomingStub + 'static,
-        CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
+        where
+            NI: NetworkInformationProvider + 'static,
+            CN: NodeIncomingStub + 'static,
+            CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
     {
         let (tx, rx) = channel::new_oneshot_channel();
 
@@ -742,8 +741,8 @@ impl ConnectionHandler {
                             info!("{:?} // Established connection to node {:?}", my_id, peer_id);
 
                             let err = connections.handle_connection_established(other_node_info, SecureSocket::Sync(sock),
-                                                                                    ReadingBuffer::init_with_size(Header::LENGTH),
-                                                                                    None);
+                                                                                ReadingBuffer::init_with_size(Header::LENGTH),
+                                                                                None);
 
                             if err.is_err() {
                                 let _ = tx.send(err);
@@ -791,10 +790,10 @@ pub fn initialize_server<NI, CN, CNP>(
     network_info: Arc<NI>,
     conns: Arc<Connections<NI, CN, CNP>>,
 ) -> Arc<Waker>
-where
-    NI: NetworkInformationProvider + 'static,
-    CN: NodeIncomingStub + 'static,
-    CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
+    where
+        NI: NetworkInformationProvider + 'static,
+        CN: NodeIncomingStub + 'static,
+        CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
 {
     let server_worker = ServerWorker::new(
         my_id,
@@ -803,7 +802,7 @@ where
         network_info,
         conns,
     )
-    .unwrap();
+        .unwrap();
 
     let waker = server_worker.waker.clone();
 

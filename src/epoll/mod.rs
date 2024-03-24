@@ -25,14 +25,12 @@ pub(crate) enum EpollWorkerMessage<CN> {
     CloseConnection(Token),
 }
 
-pub(crate) fn init_worker_group_handle<NI, CN, CNP>(
+pub(crate) fn init_worker_group_handle<CN>(
     worker_count: u32,
 ) -> (
     EpollWorkerGroupHandle<CN>,
     Vec<ChannelSyncRx<EpollWorkerMessage<CN>>>,
 )
-where
-    NI: NetworkInformationProvider,
 {
     let mut workers = Vec::with_capacity(worker_count as usize);
 

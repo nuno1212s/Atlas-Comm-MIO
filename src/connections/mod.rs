@@ -1,38 +1,40 @@
-pub(crate) mod conn_establish;
+#![allow(dead_code)]
+
+use std::net::Shutdown;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+use anyhow::Context;
+use crossbeam_skiplist::SkipMap;
+use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
+use getset::{CopyGetters, Getters};
+use log::{debug, error, info, warn};
+use mio::{Token, Waker};
+use thiserror::Error;
+
+use atlas_common::channel::{ChannelSyncRx, ChannelSyncTx, OneShotRx, TryRecvError};
+use atlas_common::Err;
+use atlas_common::node_id::{NodeId, NodeType};
+use atlas_common::socket::{MioSocket, SecureSocket, SecureSocketSync, SyncListener};
+use atlas_communication::byte_stub;
+use atlas_communication::byte_stub::{NodeIncomingStub, NodeStubController};
+use atlas_communication::byte_stub::connections::NetworkConnectionController;
+use atlas_communication::message::{NetworkSerializedMessage, WireMessage};
+use atlas_communication::reconfiguration::{NetworkInformationProvider, NodeInfo};
 
 use crate::conn_util;
 use crate::conn_util::{ConnCounts, ReadingBuffer, WritingBuffer};
 use crate::connections::conn_establish::{ConnectionEstablishError, ConnectionHandler};
 use crate::epoll::{EpollWorkerGroupHandle, EpollWorkerId, NewConnection};
-use anyhow::Context;
-use atlas_common::channel::{ChannelSyncRx, ChannelSyncTx, OneShotRx, TryRecvError};
-use atlas_common::node_id::{NodeId, NodeType};
-use atlas_common::socket::{MioSocket, SecureSocket, SecureSocketSync, SyncListener};
-use atlas_common::Err;
-use atlas_communication::byte_stub;
-use atlas_communication::byte_stub::connections::NetworkConnectionController;
-use atlas_communication::byte_stub::{NodeIncomingStub, NodeStubController};
-use atlas_communication::message::{NetworkSerializedMessage, WireMessage};
-use atlas_communication::reconfiguration::{NetworkInformationProvider, NodeInfo};
-use crossbeam_skiplist::SkipMap;
-use dashmap::mapref::entry::Entry;
 
-use dashmap::DashMap;
-use getset::{CopyGetters, Getters};
-use log::{debug, error, info, warn};
-use mio::{Token, Waker};
-use std::net::Shutdown;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Arc;
-use thiserror::Error;
-
-pub const SEND_QUEUE_SIZE: usize = 1024;
+pub(crate) mod conn_establish;
 
 /// The manager for all currently active connections
 #[derive(Getters, CopyGetters)]
 pub struct Connections<NI, IS, CNP>
-where
-    NI: NetworkInformationProvider,
+    where
+        NI: NetworkInformationProvider,
 {
     #[get_copy = "pub"]
     own_id: NodeId,
@@ -71,10 +73,10 @@ pub struct PeerConn<IS> {
 }
 
 impl<NI, CN, CNP> Connections<NI, CN, CNP>
-where
-    CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
-    NI: NetworkInformationProvider + 'static,
-    CN: NodeIncomingStub + 'static,
+    where
+        CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
+        NI: NetworkInformationProvider + 'static,
+        CN: NodeIncomingStub + 'static,
 {
     pub(super) fn initialize_connections(
         network_info: Arc<NI>,
@@ -144,18 +146,18 @@ where
 
         let node_info = self.network_info.get_node_info(&node);
 
-        let node_info = if node_info.is_none() {
-            return Err!(ConnectionError::NodeInfoNotFound(node));
-        } else {
+        let node_info = if let Some(node) = node_info {
             match (
                 self.network_info.own_node_info().node_type(),
-                node_info.clone().unwrap().node_type(),
+                node.node_type(),
             ) {
                 (NodeType::Client, NodeType::Client) => {
-                    return Err!(ConnectionError::ClientCannotConnectToClient(node));
+                    return Err!(ConnectionError::ClientCannotConnectToClient(node.node_id()));
                 }
-                _ => node_info.unwrap(),
+                _ => node,
             }
+        } else {
+            return Err!(ConnectionError::NodeInfoNotFound(node));
         };
 
         let current_connections = self
@@ -406,10 +408,10 @@ where
 }
 
 impl<NI, IS, CNP> NetworkConnectionController for Connections<NI, IS, CNP>
-where
-    NI: NetworkInformationProvider + 'static,
-    IS: NodeIncomingStub + 'static,
-    CNP: NodeStubController<ByteMessageSendStub, IS> + 'static,
+    where
+        NI: NetworkInformationProvider + 'static,
+        IS: NodeIncomingStub + 'static,
+        CNP: NodeStubController<ByteMessageSendStub, IS> + 'static,
 {
     fn has_connection(&self, node: &NodeId) -> bool {
         self.is_connected_to_node(node)
@@ -591,5 +593,5 @@ pub enum ConnectionError {
     #[error("Failed to connect to node {0:?} as we are both clients")]
     ClientCannotConnectToClient(NodeId),
     #[error("Failed to connect to node due to internal error {0:?}")]
-    InternalConnectionError(#[from] ConnectionEstablishError),
+    InternalConnError(#[from] ConnectionEstablishError),
 }

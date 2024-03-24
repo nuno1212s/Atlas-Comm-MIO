@@ -1,3 +1,5 @@
+#![allow(dead_code, clippy::large_enum_variant)]
+
 use crate::conn_util;
 use crate::conn_util::{
     interrupted, would_block, ConnectionReadWork, ConnectionWriteWork, ReadingBuffer, WritingBuffer,
@@ -34,8 +36,8 @@ enum ConnectionWorkResult {
 type ConnectionRegister = ChannelSyncRx<MioSocket>;
 
 pub(crate) struct EpollWorker<NI, CN, CNP>
-where
-    NI: NetworkInformationProvider,
+    where
+        NI: NetworkInformationProvider,
 {
     worker_id: EpollWorkerId,
 
@@ -57,7 +59,6 @@ enum SocketConnection<CN> {
         socket: MioSocket,
         reading_info: ReadingBuffer,
         writing_info: Option<WritingBuffer>,
-
         connection: Arc<PeerConn<CN>>,
     },
     Waker,
@@ -73,10 +74,10 @@ impl<CN> SocketConnection<CN> {
 }
 
 impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
-where
-    CN: NodeIncomingStub + 'static,
-    NI: NetworkInformationProvider + 'static,
-    CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
+    where
+        CN: NodeIncomingStub + 'static,
+        NI: NetworkInformationProvider + 'static,
+        CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
 {
     /// Initializing a worker thread for the worker group
     pub(crate) fn new(
@@ -451,26 +452,18 @@ where
 
     /// Receive connections from the connection register and register them with the epoll instance
     fn register_connections(&mut self) -> atlas_common::error::Result<()> {
-        loop {
-            match self.conn_register.try_recv() {
-                Ok(message) => {
-                    match message {
-                        EpollWorkerMessage::NewConnection(conn) => {
-                            self.create_connection(conn)?;
-                        }
-                        EpollWorkerMessage::CloseConnection(token) => {
-                            if let SocketConnection::Waker = &self.connections[token.into()] {
-                                // We can't close the waker, wdym?
-                                continue;
-                            }
-
-                            self.delete_connection(token, false)?;
-                        }
-                    }
+        while let Ok(message) = self.conn_register.try_recv() {
+            match message {
+                EpollWorkerMessage::NewConnection(conn) => {
+                    self.create_connection(conn)?;
                 }
-                Err(_err) => {
-                    // No more connections are ready to be accepted
-                    break;
+                EpollWorkerMessage::CloseConnection(token) => {
+                    if let SocketConnection::Waker = &self.connections[token.into()] {
+                        // We can't close the waker, wdym?
+                        continue;
+                    }
+
+                    self.delete_connection(token, false)?;
                 }
             }
         }

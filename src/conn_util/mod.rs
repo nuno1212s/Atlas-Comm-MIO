@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::config::TcpConfig;
 use atlas_common::channel::{ChannelSyncRx, ChannelSyncTx};
 use atlas_common::node_id::NodeType;
