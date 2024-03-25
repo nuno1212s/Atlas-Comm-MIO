@@ -13,12 +13,12 @@ use log::{debug, error, info, warn};
 use mio::{Token, Waker};
 use thiserror::Error;
 
-use atlas_common::channel::{ChannelSyncRx, ChannelSyncTx, OneShotRx, TryRecvError};
+use atlas_common::channel::{ChannelSyncRx, ChannelSyncTx, OneShotRx, TryRecvError, TrySendReturnError};
 use atlas_common::Err;
 use atlas_common::node_id::{NodeId, NodeType};
 use atlas_common::socket::{MioSocket, SecureSocket, SecureSocketSync, SyncListener};
 use atlas_communication::byte_stub;
-use atlas_communication::byte_stub::{NodeIncomingStub, NodeStubController};
+use atlas_communication::byte_stub::{DispatchError, NodeIncomingStub, NodeStubController};
 use atlas_communication::byte_stub::connections::NetworkConnectionController;
 use atlas_communication::message::{NetworkSerializedMessage, WireMessage};
 use atlas_communication::reconfiguration::{NetworkInformationProvider, NodeInfo};
@@ -534,8 +534,17 @@ pub struct ByteMessageSendStub(
 );
 
 impl byte_stub::ByteNetworkStub for ByteMessageSendStub {
-    fn dispatch_message(&self, message: WireMessage) -> atlas_common::error::Result<()> {
-        self.0.send(message).context("Failed to send to channel")?;
+    fn dispatch_message(&self, message: WireMessage) -> Result<(), DispatchError> {
+        if let Err(err) = self.0.try_send_return(message) {
+            return match err {
+                TrySendReturnError::Disconnected(_) | TrySendReturnError::Timeout(_) => {
+                    Err!(DispatchError::InternalError(err.into()))
+                }
+                TrySendReturnError::Full(message) => {
+                    Err!(DispatchError::CouldNotDispatchTryLater(message))
+                }
+            }
+        }
 
         for entry in self.1.iter() {
             if let Some(conn) = entry.value() {
@@ -543,6 +552,19 @@ impl byte_stub::ByteNetworkStub for ByteMessageSendStub {
             }
         }
 
+        Ok(())
+    }
+
+    fn dispatch_blocking(&self, message: WireMessage) -> atlas_common::error::Result<()> {
+        self.0.send(message)
+            .context("Failed to send message to another node")?;
+        
+        for entry in self.1.iter() {
+            if let Some(conn) = entry.value() {
+                conn.waker.wake().context("Failed to wake worker")?;
+            }
+        }
+        
         Ok(())
     }
 }
