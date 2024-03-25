@@ -24,6 +24,7 @@ pub mod config;
 pub(crate) mod conn_util;
 mod connections;
 mod epoll;
+mod metrics;
 
 /// The byte level TCP MIO epoll based module
 /// Utilizes the MIO library to provide a TCP based communication layer

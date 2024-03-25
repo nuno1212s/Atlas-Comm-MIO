@@ -2,7 +2,7 @@
 
 use crate::config::TcpConfig;
 use atlas_common::channel::{ChannelSyncRx, ChannelSyncTx};
-use atlas_common::node_id::NodeType;
+use atlas_common::node_id::{NodeId, NodeType};
 use atlas_common::socket::MioSocket;
 use atlas_common::{channel, Err};
 use atlas_communication::lookup_table::MessageModule;
@@ -470,6 +470,6 @@ impl WritingBuffer {
     }
 }
 
-pub fn initialize_send_channel() -> (ChannelSyncTx<WireMessage>, ChannelSyncRx<WireMessage>) {
-    channel::new_bounded_sync(128, Some("Network Msg"))
+pub fn initialize_send_channel(peer: NodeId) -> (ChannelSyncTx<WireMessage>, ChannelSyncRx<WireMessage>) {
+    channel::new_bounded_sync(1024, Some(format!("Network Peer Send Message {:?}", peer).as_str()))
 }

@@ -258,7 +258,7 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
         };
 
         let to_send_channel = match self.registered_connections.get(&node.node_id()) {
-            None => conn_util::initialize_send_channel(),
+            None => conn_util::initialize_send_channel(node.node_id()),
             Some(conn) => conn.to_send.clone(),
         };
 

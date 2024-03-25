@@ -1,6 +1,6 @@
 #![allow(clippy::large_enum_variant)]
 
-use anyhow::anyhow;
+use anyhow::{anyhow, Context};
 use std::collections::BTreeMap;
 use std::fmt::{Debug, Formatter};
 use std::io;
@@ -157,15 +157,19 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
             for event in events.iter() {
                 match event.token() {
                     token if token == self.server_token => {
-                        self.accept_connections()?;
+                        self.accept_connections()
+                            .context("Error while accepting connections")?;
                     }
                     token if token == self.waker_token => {
-                        self.handle_write_request()?;
+                        self.handle_write_request()
+                            .context("Error while handling write requests")?;
                     }
                     token => {
-                        let result = self.handle_connection_ev(token, event)?;
+                        let result = self.handle_connection_ev(token, event)
+                            .context("Error while handling connection event")?;
 
-                        self.handle_connection_result(token, result)?;
+                        self.handle_connection_result(token, result)
+                            .context("Error while handling connection results")?;
                     }
                 }
             }
@@ -205,19 +209,22 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
                         PendingConnection::PendingConn { socket, .. } => {
                             self.poll
                                 .registry()
-                                .register(socket, token, Interest::READABLE)?;
+                                .register(socket, token, Interest::READABLE)
+                                .context("Failed to register pending conn socket")?;
                         }
                         _ => unreachable!(),
                     }
 
-                    let result = self.handle_connection_readable(token)?;
+                    let result = self.handle_connection_readable(token)
+                        .context("Error while handling readable connection")?;
 
                     debug!(
                         "{:?} // Connection from {} is {:?} (Token {:?})",
                         self.my_id, addr, result, token
                     );
 
-                    self.handle_connection_result(token, result)?;
+                    self.handle_connection_result(token, result)
+                        .context("Error while handling connection result")?;
                 }
                 Err(err) if would_block(&err) => {
                     // No more connections are ready to be accepted
@@ -313,8 +320,9 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
                                 socket,
                                 read_buf,
                                 write_buf,
-                                channel.unwrap_or_else(conn_util::initialize_send_channel),
+                                channel.unwrap_or_else(|| conn_util::initialize_send_channel(node_id)),
                             )?;
+                            
                             // We have identified the peer and should now handle the connection
                             for message in pending_messages {
                                 if message.header().payload_length() > 0 {
