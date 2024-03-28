@@ -470,6 +470,11 @@ impl WritingBuffer {
     }
 }
 
-pub fn initialize_send_channel(peer: NodeId) -> (ChannelSyncTx<WireMessage>, ChannelSyncRx<WireMessage>) {
-    channel::new_bounded_sync(2048, Some(format!("Network Peer Send Message {:?}", peer).as_str()))
+pub fn initialize_send_channel(
+    peer: NodeId,
+) -> (ChannelSyncTx<WireMessage>, ChannelSyncRx<WireMessage>) {
+    channel::new_bounded_sync(
+        2048,
+        Some(format!("Network Peer Send Message {:?}", peer).as_str()),
+    )
 }

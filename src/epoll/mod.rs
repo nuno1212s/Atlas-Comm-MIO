@@ -30,8 +30,7 @@ pub(crate) fn init_worker_group_handle<CN>(
 ) -> (
     EpollWorkerGroupHandle<CN>,
     Vec<ChannelSyncRx<EpollWorkerMessage<CN>>>,
-)
-{
+) {
     let mut workers = Vec::with_capacity(worker_count as usize);
 
     let mut receivers = Vec::with_capacity(worker_count as usize);

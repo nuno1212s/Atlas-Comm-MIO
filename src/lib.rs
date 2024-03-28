@@ -92,8 +92,7 @@ where
     where
         Self: Sized,
     {
-        let (handle, receivers) =
-            init_worker_group_handle::<IS>(config.epoll_worker_count());
+        let (handle, receivers) = init_worker_group_handle::<IS>(config.epoll_worker_count());
 
         let connections = Arc::new(Connections::initialize_connections(
             network_info.clone(),

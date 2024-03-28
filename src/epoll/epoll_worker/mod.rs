@@ -36,8 +36,8 @@ enum ConnectionWorkResult {
 type ConnectionRegister = ChannelSyncRx<MioSocket>;
 
 pub(crate) struct EpollWorker<NI, CN, CNP>
-    where
-        NI: NetworkInformationProvider,
+where
+    NI: NetworkInformationProvider,
 {
     worker_id: EpollWorkerId,
 
@@ -74,10 +74,10 @@ impl<CN> SocketConnection<CN> {
 }
 
 impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
-    where
-        CN: NodeIncomingStub + 'static,
-        NI: NetworkInformationProvider + 'static,
-        CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
+where
+    CN: NodeIncomingStub + 'static,
+    NI: NetworkInformationProvider + 'static,
+    CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
 {
     /// Initializing a worker thread for the worker group
     pub(crate) fn new(

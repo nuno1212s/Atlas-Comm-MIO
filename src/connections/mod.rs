@@ -1,25 +1,27 @@
 #![allow(dead_code)]
 
 use std::net::Shutdown;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
 
 use anyhow::Context;
 use crossbeam_skiplist::SkipMap;
-use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
+use dashmap::DashMap;
 use getset::{CopyGetters, Getters};
 use log::{debug, error, info, warn};
 use mio::{Token, Waker};
 use thiserror::Error;
 
-use atlas_common::channel::{ChannelSyncRx, ChannelSyncTx, OneShotRx, TryRecvError, TrySendReturnError};
-use atlas_common::Err;
+use atlas_common::channel::{
+    ChannelSyncRx, ChannelSyncTx, OneShotRx, TryRecvError, TrySendReturnError,
+};
 use atlas_common::node_id::{NodeId, NodeType};
 use atlas_common::socket::{MioSocket, SecureSocket, SecureSocketSync, SyncListener};
+use atlas_common::Err;
 use atlas_communication::byte_stub;
-use atlas_communication::byte_stub::{DispatchError, NodeIncomingStub, NodeStubController};
 use atlas_communication::byte_stub::connections::NetworkConnectionController;
+use atlas_communication::byte_stub::{DispatchError, NodeIncomingStub, NodeStubController};
 use atlas_communication::message::{NetworkSerializedMessage, WireMessage};
 use atlas_communication::reconfiguration::{NetworkInformationProvider, NodeInfo};
 
@@ -33,8 +35,8 @@ pub(crate) mod conn_establish;
 /// The manager for all currently active connections
 #[derive(Getters, CopyGetters)]
 pub struct Connections<NI, IS, CNP>
-    where
-        NI: NetworkInformationProvider,
+where
+    NI: NetworkInformationProvider,
 {
     #[get_copy = "pub"]
     own_id: NodeId,
@@ -73,10 +75,10 @@ pub struct PeerConn<IS> {
 }
 
 impl<NI, CN, CNP> Connections<NI, CN, CNP>
-    where
-        CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
-        NI: NetworkInformationProvider + 'static,
-        CN: NodeIncomingStub + 'static,
+where
+    CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
+    NI: NetworkInformationProvider + 'static,
+    CN: NodeIncomingStub + 'static,
 {
     pub(super) fn initialize_connections(
         network_info: Arc<NI>,
@@ -408,10 +410,10 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
 }
 
 impl<NI, IS, CNP> NetworkConnectionController for Connections<NI, IS, CNP>
-    where
-        NI: NetworkInformationProvider + 'static,
-        IS: NodeIncomingStub + 'static,
-        CNP: NodeStubController<ByteMessageSendStub, IS> + 'static,
+where
+    NI: NetworkInformationProvider + 'static,
+    IS: NodeIncomingStub + 'static,
+    CNP: NodeStubController<ByteMessageSendStub, IS> + 'static,
 {
     fn has_connection(&self, node: &NodeId) -> bool {
         self.is_connected_to_node(node)
@@ -543,7 +545,7 @@ impl byte_stub::ByteNetworkStub for ByteMessageSendStub {
                 TrySendReturnError::Full(message) => {
                     Err!(DispatchError::CouldNotDispatchTryLater(message))
                 }
-            }
+            };
         }
 
         for entry in self.1.iter() {
@@ -556,15 +558,16 @@ impl byte_stub::ByteNetworkStub for ByteMessageSendStub {
     }
 
     fn dispatch_blocking(&self, message: WireMessage) -> atlas_common::error::Result<()> {
-        self.0.send(message)
+        self.0
+            .send(message)
             .context("Failed to send message to another node")?;
-        
+
         for entry in self.1.iter() {
             if let Some(conn) = entry.value() {
                 conn.waker.wake().context("Failed to wake worker")?;
             }
         }
-        
+
         Ok(())
     }
 }

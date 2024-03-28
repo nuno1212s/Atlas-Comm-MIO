@@ -67,8 +67,8 @@ enum PendingConnection {
 }
 
 pub struct ServerWorker<NI, IS, CNP>
-    where
-        NI: NetworkInformationProvider,
+where
+    NI: NetworkInformationProvider,
 {
     my_id: NodeId,
     listener: MioListener,
@@ -91,10 +91,10 @@ enum ConnectionResult {
 }
 
 impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
-    where
-        NI: NetworkInformationProvider + 'static,
-        CN: NodeIncomingStub + 'static,
-        CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
+where
+    NI: NetworkInformationProvider + 'static,
+    CN: NodeIncomingStub + 'static,
+    CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
 {
     pub fn new(
         my_id: NodeId,
@@ -165,7 +165,8 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
                             .context("Error while handling write requests")?;
                     }
                     token => {
-                        let result = self.handle_connection_ev(token, event)
+                        let result = self
+                            .handle_connection_ev(token, event)
                             .context("Error while handling connection event")?;
 
                         self.handle_connection_result(token, result)
@@ -215,7 +216,8 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
                         _ => unreachable!(),
                     }
 
-                    let result = self.handle_connection_readable(token)
+                    let result = self
+                        .handle_connection_readable(token)
                         .context("Error while handling readable connection")?;
 
                     debug!(
@@ -320,9 +322,10 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
                                 socket,
                                 read_buf,
                                 write_buf,
-                                channel.unwrap_or_else(|| conn_util::initialize_send_channel(node_id)),
+                                channel
+                                    .unwrap_or_else(|| conn_util::initialize_send_channel(node_id)),
                             )?;
-                            
+
                             // We have identified the peer and should now handle the connection
                             for message in pending_messages {
                                 if message.header().payload_length() > 0 {
@@ -586,8 +589,8 @@ impl ConnectionHandler {
     /// We may not be able to connect to a given node if the amount of connections
     /// being established already overtakes the limit of concurrent connections
     fn register_connecting_to_node<NI>(&self, peer_id: NodeId, network_info: &NI) -> bool
-        where
-            NI: NetworkInformationProvider,
+    where
+        NI: NetworkInformationProvider,
     {
         let mut connecting_guard = self.currently_connecting.lock().unwrap();
 
@@ -602,9 +605,9 @@ impl ConnectionHandler {
 
         if *value
             > self
-            .concurrent_conn
-            .get_connections_to_node(network_info.own_node_info().node_type(), other_node_type)
-            * 2
+                .concurrent_conn
+                .get_connections_to_node(network_info.own_node_info().node_type(), other_node_type)
+                * 2
         {
             *value -= 1;
 
@@ -635,10 +638,10 @@ impl ConnectionHandler {
         peer_id: NodeId,
         addr: PeerAddr,
     ) -> std::result::Result<OneShotRx<Result<()>>, ConnectionEstablishError>
-        where
-            NI: NetworkInformationProvider + 'static,
-            CN: NodeIncomingStub + 'static,
-            CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
+    where
+        NI: NetworkInformationProvider + 'static,
+        CN: NodeIncomingStub + 'static,
+        CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
     {
         let (tx, rx) = channel::new_oneshot_channel();
 
@@ -798,10 +801,10 @@ pub fn initialize_server<NI, CN, CNP>(
     network_info: Arc<NI>,
     conns: Arc<Connections<NI, CN, CNP>>,
 ) -> Arc<Waker>
-    where
-        NI: NetworkInformationProvider + 'static,
-        CN: NodeIncomingStub + 'static,
-        CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
+where
+    NI: NetworkInformationProvider + 'static,
+    CN: NodeIncomingStub + 'static,
+    CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
 {
     let server_worker = ServerWorker::new(
         my_id,
@@ -810,7 +813,7 @@ pub fn initialize_server<NI, CN, CNP>(
         network_info,
         conns,
     )
-        .unwrap();
+    .unwrap();
 
     let waker = server_worker.waker.clone();
 
