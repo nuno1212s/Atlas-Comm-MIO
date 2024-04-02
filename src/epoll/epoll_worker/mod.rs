@@ -14,7 +14,6 @@ use atlas_common::Err;
 use atlas_communication::byte_stub::{NodeIncomingStub, NodeStubController};
 
 use atlas_communication::reconfiguration::NetworkInformationProvider;
-use log::{debug, error, info, trace};
 use mio::event::Event;
 use mio::{Events, Interest, Poll, Token, Waker};
 use slab::Slab;
@@ -23,6 +22,7 @@ use std::io::Write;
 use std::net::Shutdown;
 use std::sync::Arc;
 use std::time::Duration;
+use tracing::{debug, error, info, trace};
 
 const EVENT_CAPACITY: usize = 1024;
 const DEFAULT_SOCKET_CAPACITY: usize = 1024;

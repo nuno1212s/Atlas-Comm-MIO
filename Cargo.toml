@@ -17,7 +17,7 @@ atlas-communication = { path = "../Atlas-Communication" }
 anyhow = "1.0"
 thiserror = "1.0"
 bytes = "1"
-log = "0.4"
+tracing = "*"
 strum = "0.25"
 getset = "0.1.2"
 

@@ -10,11 +10,11 @@ use atlas_common::node_id::NodeId;
 use atlas_common::socket::MioSocket;
 use atlas_communication::byte_stub::{NodeIncomingStub, NodeStubController};
 use atlas_communication::reconfiguration::NetworkInformationProvider;
-use log::error;
 use mio::Token;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
+use tracing::error;
 
 pub type EpollWorkerId = u32;
 

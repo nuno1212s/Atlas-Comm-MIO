@@ -10,10 +10,10 @@ use atlas_communication::message::{Header, WireMessage};
 
 use bytes::{Buf, Bytes, BytesMut};
 use getset::Getters;
-use log::{debug, trace, warn};
 use std::io;
 use std::io::{Read, Write};
 use std::mem::size_of;
+use tracing::{debug, trace, warn};
 
 pub type Callback = Option<Box<dyn FnOnce(bool) + Send>>;
 

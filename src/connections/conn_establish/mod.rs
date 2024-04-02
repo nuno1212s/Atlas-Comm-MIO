@@ -10,11 +10,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
-use log::{debug, error, info, trace, warn};
 use mio::event::Event;
 use mio::{Events, Interest, Poll, Token, Waker};
 use slab::Slab;
 use thiserror::Error;
+use tracing::{debug, error, info, trace, warn};
 
 use atlas_common::channel::{ChannelSyncRx, ChannelSyncTx, OneShotRx};
 use atlas_common::error::*;

@@ -9,9 +9,9 @@ use crossbeam_skiplist::SkipMap;
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use getset::{CopyGetters, Getters};
-use log::{debug, error, info, warn};
 use mio::{Token, Waker};
 use thiserror::Error;
+use tracing::{debug, error, info, warn};
 
 use atlas_common::channel::{
     ChannelSyncRx, ChannelSyncTx, OneShotRx, TryRecvError, TrySendReturnError,
