@@ -1,5 +1,6 @@
 #![allow(dead_code, clippy::large_enum_variant)]
 
+use std::fmt::{Debug, Formatter};
 use crate::conn_util;
 use crate::conn_util::{
     interrupted, would_block, ConnectionReadWork, ConnectionWriteWork, ReadingBuffer, WritingBuffer,
@@ -23,6 +24,7 @@ use std::net::Shutdown;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, error, info, trace};
+use tracing::instrument;
 
 const EVENT_CAPACITY: usize = 1024;
 const DEFAULT_SOCKET_CAPACITY: usize = 1024;
@@ -36,8 +38,8 @@ enum ConnectionWorkResult {
 type ConnectionRegister = ChannelSyncRx<MioSocket>;
 
 pub(crate) struct EpollWorker<NI, CN, CNP>
-where
-    NI: NetworkInformationProvider,
+    where
+        NI: NetworkInformationProvider,
 {
     worker_id: EpollWorkerId,
 
@@ -74,10 +76,10 @@ impl<CN> SocketConnection<CN> {
 }
 
 impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
-where
-    CN: NodeIncomingStub + 'static,
-    NI: NetworkInformationProvider + 'static,
-    CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
+    where
+        CN: NodeIncomingStub + 'static,
+        NI: NetworkInformationProvider + 'static,
+        CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
 {
     /// Initializing a worker thread for the worker group
     pub(crate) fn new(
@@ -119,6 +121,7 @@ where
         })
     }
 
+    #[instrument]
     pub(super) fn epoll_worker_loop(mut self) -> atlas_common::error::Result<()> {
         let mut event_queue = Events::with_capacity(EVENT_CAPACITY);
 
@@ -251,6 +254,7 @@ where
         }
     }
 
+    #[instrument(level = "debug")]
     fn handle_connection_event(
         &mut self,
         token: Token,
@@ -290,6 +294,7 @@ where
         Ok(ConnectionWorkResult::Working)
     }
 
+    #[instrument(level = "debug")]
     fn try_write_until_block(
         &mut self,
         token: Token,
@@ -401,6 +406,7 @@ where
         Ok(ConnectionWorkResult::Working)
     }
 
+    #[instrument(level = "debug")]
     fn read_until_block(
         &mut self,
         token: Token,
@@ -451,6 +457,7 @@ where
     }
 
     /// Receive connections from the connection register and register them with the epoll instance
+    #[instrument]
     fn register_connections(&mut self) -> atlas_common::error::Result<()> {
         while let Ok(message) = self.conn_register.try_recv() {
             match message {
@@ -471,6 +478,7 @@ where
         Ok(())
     }
 
+    #[instrument]
     fn create_connection(&mut self, conn: NewConnection<CN>) -> atlas_common::error::Result<()> {
         let NewConnection {
             conn_id,
@@ -525,6 +533,7 @@ where
         Ok(())
     }
 
+    #[instrument]
     fn delete_connection(
         &mut self,
         token: Token,
@@ -547,6 +556,12 @@ where
                         connection.delete_connection(handle.id());
                     }
 
+                    info!(
+                        "{:?} // Deleted connection {:?} to node {:?}",
+                        self.global_conns.own_id(),
+                        token,
+                        handle.peer_id());
+
                     socket.shutdown(Shutdown::Both)?;
                 }
                 _ => unreachable!("Only peer connections can be removed from the connection slab"),
@@ -564,5 +579,27 @@ where
 
     pub fn waker(&self) -> &Arc<Waker> {
         &self.waker
+    }
+}
+
+impl<CN> Debug for NewConnection<CN> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NewConnection")
+            .field("conn_id", &self.conn_id)
+            .field("peer_id", &self.peer_id)
+            .field("my_id", &self.my_id)
+            .finish()
+    }
+}
+
+impl<NI, CN, CNP> Debug for EpollWorker<NI, CN, CNP>
+    where
+        NI: NetworkInformationProvider
+{
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EpollWorker")
+            .field("worker_id", &self.worker_id)
+            .field("managed_conns", &self.connections.len())
+            .finish()
     }
 }
