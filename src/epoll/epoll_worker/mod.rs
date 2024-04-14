@@ -1,6 +1,5 @@
 #![allow(dead_code, clippy::large_enum_variant)]
 
-use std::fmt::{Debug, Formatter};
 use crate::conn_util;
 use crate::conn_util::{
     interrupted, would_block, ConnectionReadWork, ConnectionWriteWork, ReadingBuffer, WritingBuffer,
@@ -13,6 +12,7 @@ use atlas_common::node_id::NodeId;
 use atlas_common::socket::MioSocket;
 use atlas_common::Err;
 use atlas_communication::byte_stub::{NodeIncomingStub, NodeStubController};
+use std::fmt::{Debug, Formatter};
 
 use atlas_communication::reconfiguration::NetworkInformationProvider;
 use mio::event::Event;
@@ -23,8 +23,8 @@ use std::io::Write;
 use std::net::Shutdown;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, error, info, trace, Level};
 use tracing::instrument;
+use tracing::{debug, error, info, trace, Level};
 
 const EVENT_CAPACITY: usize = 1024;
 const DEFAULT_SOCKET_CAPACITY: usize = 1024;
@@ -38,8 +38,8 @@ enum ConnectionWorkResult {
 type ConnectionRegister = ChannelSyncRx<MioSocket>;
 
 pub(crate) struct EpollWorker<NI, CN, CNP>
-    where
-        NI: NetworkInformationProvider,
+where
+    NI: NetworkInformationProvider,
 {
     worker_id: EpollWorkerId,
 
@@ -76,10 +76,10 @@ impl<CN> SocketConnection<CN> {
 }
 
 impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
-    where
-        CN: NodeIncomingStub + 'static,
-        NI: NetworkInformationProvider + 'static,
-        CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
+where
+    CN: NodeIncomingStub + 'static,
+    NI: NetworkInformationProvider + 'static,
+    CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
 {
     /// Initializing a worker thread for the worker group
     pub(crate) fn new(
@@ -560,7 +560,8 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
                         "{:?} // Deleted connection {:?} to node {:?}",
                         self.global_conns.own_id(),
                         token,
-                        handle.peer_id());
+                        handle.peer_id()
+                    );
 
                     socket.shutdown(Shutdown::Both)?;
                 }
@@ -593,8 +594,8 @@ impl<CN> Debug for NewConnection<CN> {
 }
 
 impl<NI, CN, CNP> Debug for EpollWorker<NI, CN, CNP>
-    where
-        NI: NetworkInformationProvider
+where
+    NI: NetworkInformationProvider,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EpollWorker")

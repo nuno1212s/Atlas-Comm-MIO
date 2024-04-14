@@ -1,13 +1,13 @@
 #![allow(dead_code)]
 
 use std::net::Shutdown;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
 
 use anyhow::Context;
 use crossbeam_skiplist::SkipMap;
-use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
+use dashmap::DashMap;
 use getset::{CopyGetters, Getters};
 use mio::{Token, Waker};
 use thiserror::Error;
@@ -16,12 +16,12 @@ use tracing::{debug, error, info, instrument, warn};
 use atlas_common::channel::{
     ChannelSyncRx, ChannelSyncTx, OneShotRx, TryRecvError, TrySendReturnError,
 };
-use atlas_common::Err;
 use atlas_common::node_id::{NodeId, NodeType};
 use atlas_common::socket::{MioSocket, SecureSocket, SecureSocketSync, SyncListener};
+use atlas_common::Err;
 use atlas_communication::byte_stub;
-use atlas_communication::byte_stub::{DispatchError, NodeIncomingStub, NodeStubController};
 use atlas_communication::byte_stub::connections::NetworkConnectionController;
+use atlas_communication::byte_stub::{DispatchError, NodeIncomingStub, NodeStubController};
 use atlas_communication::message::{NetworkSerializedMessage, WireMessage};
 use atlas_communication::reconfiguration::{NetworkInformationProvider, NodeInfo};
 
@@ -35,8 +35,8 @@ pub(crate) mod conn_establish;
 /// The manager for all currently active connections
 #[derive(Getters, CopyGetters)]
 pub struct Connections<NI, IS, CNP>
-    where
-        NI: NetworkInformationProvider,
+where
+    NI: NetworkInformationProvider,
 {
     #[get_copy = "pub"]
     own_id: NodeId,
@@ -75,10 +75,10 @@ pub struct PeerConn<IS> {
 }
 
 impl<NI, CN, CNP> Connections<NI, CN, CNP>
-    where
-        CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
-        NI: NetworkInformationProvider + 'static,
-        CN: NodeIncomingStub + 'static,
+where
+    CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
+    NI: NetworkInformationProvider + 'static,
+    CN: NodeIncomingStub + 'static,
 {
     pub(super) fn initialize_connections(
         network_info: Arc<NI>,
@@ -296,7 +296,6 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
             self.own_id, node
         );
 
-
         let other_node = node.clone();
 
         let peer_conn = match self.registered_connections.entry(node.node_id()) {
@@ -393,7 +392,8 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
     #[instrument(skip(self))]
     pub(super) fn handle_connection_failed(self: &Arc<Self>, node: NodeId, conn_id: u32) {
         info!(
-            "Handling failed connection to {:?}. Conn: {:?}", node, conn_id
+            "Handling failed connection to {:?}. Conn: {:?}",
+            node, conn_id
         );
 
         let connection = if let Some(conn) = self.registered_connections.get(&node) {
@@ -401,7 +401,7 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
         } else {
             warn!(
                 "Failed to find connection to {:?} when handling failed connection {:?}",
-                 node, conn_id
+                node, conn_id
             );
             return;
         };
@@ -431,10 +431,10 @@ impl<NI, CN, CNP> Connections<NI, CN, CNP>
 }
 
 impl<NI, IS, CNP> NetworkConnectionController for Connections<NI, IS, CNP>
-    where
-        NI: NetworkInformationProvider + 'static,
-        IS: NodeIncomingStub + 'static,
-        CNP: NodeStubController<ByteMessageSendStub, IS> + 'static,
+where
+    NI: NetworkInformationProvider + 'static,
+    IS: NodeIncomingStub + 'static,
+    CNP: NodeStubController<ByteMessageSendStub, IS> + 'static,
 {
     fn has_connection(&self, node: &NodeId) -> bool {
         self.is_connected_to_node(node)
@@ -526,7 +526,10 @@ impl<ST> PeerConn<ST> {
 
     #[instrument(skip(self))]
     pub(super) fn delete_connection(&self, conn_id: u32) {
-        debug!("Deleting connection {:?} from peer {:?}", conn_id, self.connected_peer_id);
+        debug!(
+            "Deleting connection {:?} from peer {:?}",
+            conn_id, self.connected_peer_id
+        );
 
         self.connections.remove(&conn_id);
     }
