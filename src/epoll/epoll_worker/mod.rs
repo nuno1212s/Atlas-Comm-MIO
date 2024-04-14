@@ -23,7 +23,7 @@ use std::io::Write;
 use std::net::Shutdown;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, Level};
 use tracing::instrument;
 
 const EVENT_CAPACITY: usize = 1024;
@@ -121,7 +121,7 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
         })
     }
 
-    #[instrument]
+    #[instrument(level = Level::DEBUG)]
     pub(super) fn epoll_worker_loop(mut self) -> atlas_common::error::Result<()> {
         let mut event_queue = Events::with_capacity(EVENT_CAPACITY);
 
@@ -254,7 +254,7 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
         }
     }
 
-    #[instrument(level = "debug")]
+    #[instrument(level = Level::DEBUG)]
     fn handle_connection_event(
         &mut self,
         token: Token,
@@ -294,7 +294,7 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
         Ok(ConnectionWorkResult::Working)
     }
 
-    #[instrument(level = "debug")]
+    #[instrument(level = Level::TRACE)]
     fn try_write_until_block(
         &mut self,
         token: Token,
@@ -406,7 +406,7 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
         Ok(ConnectionWorkResult::Working)
     }
 
-    #[instrument(level = "debug")]
+    #[instrument(level = Level::TRACE)]
     fn read_until_block(
         &mut self,
         token: Token,
@@ -457,7 +457,7 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
     }
 
     /// Receive connections from the connection register and register them with the epoll instance
-    #[instrument]
+    #[instrument(level = Level::TRACE)]
     fn register_connections(&mut self) -> atlas_common::error::Result<()> {
         while let Ok(message) = self.conn_register.try_recv() {
             match message {
@@ -478,7 +478,7 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
         Ok(())
     }
 
-    #[instrument]
+    #[instrument(level = Level::TRACE)]
     fn create_connection(&mut self, conn: NewConnection<CN>) -> atlas_common::error::Result<()> {
         let NewConnection {
             conn_id,
@@ -533,7 +533,7 @@ impl<NI, CN, CNP> EpollWorker<NI, CN, CNP>
         Ok(())
     }
 
-    #[instrument]
+    #[instrument(level = Level::DEBUG)]
     fn delete_connection(
         &mut self,
         token: Token,
