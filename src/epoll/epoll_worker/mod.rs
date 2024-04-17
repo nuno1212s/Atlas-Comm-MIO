@@ -6,7 +6,7 @@ use crate::conn_util::{
 };
 use crate::connections::{ByteMessageSendStub, ConnHandle, Connections, PeerConn};
 use crate::epoll::{EpollWorkerId, EpollWorkerMessage, NewConnection};
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use atlas_common::channel::ChannelSyncRx;
 use atlas_common::node_id::NodeId;
 use atlas_common::socket::MioSocket;
@@ -30,9 +30,10 @@ const EVENT_CAPACITY: usize = 1024;
 const DEFAULT_SOCKET_CAPACITY: usize = 1024;
 const WORKER_TIMEOUT: Option<Duration> = Some(Duration::from_millis(50));
 
+#[derive(Debug)]
 enum ConnectionWorkResult {
     Working,
-    ConnectionBroken,
+    ConnectionBroken(usize, usize),
 }
 
 type ConnectionRegister = ChannelSyncRx<MioSocket>;
@@ -169,16 +170,17 @@ where
 
                     to_verify.into_iter().for_each(|token| {
                         match self.try_write_until_block(token) {
-                            Ok(ConnectionWorkResult::ConnectionBroken) => {
+                            Ok(ConnectionWorkResult::ConnectionBroken(written, to_write)) => {
                                 let peer_id = {
                                     let connection = &self.connections[token.into()];
 
                                     connection.peer_id().unwrap_or(NodeId::from(1234567u32))
                                 };
 
-                                error!("{:?} // Connection broken during reading. Deleting connection {:?} to node {:?}",
-                                    my_id, token,peer_id);
-
+                                error!(" Connection broken during writing after waker token. Deleting connection {:?} to node {:?}
+                            Connection broken at written {:?} bytes, and had {:?} bytes left to write",
+                                    token,peer_id, written, to_write);
+                                
                                 if let Err(err) = self.delete_connection(token, true) {
                                     error!("{:?} // Error deleting connection {:?} to node {:?}: {:?}",
                                         my_id, token, peer_id, err);
@@ -211,15 +213,16 @@ where
                     }
 
                     match self.handle_connection_event(token, event) {
-                        Ok(ConnectionWorkResult::ConnectionBroken) => {
+                        Ok(ConnectionWorkResult::ConnectionBroken(written, to_write)) => {
                             let peer_id = {
                                 let connection = &self.connections[token.into()];
 
                                 connection.peer_id().unwrap_or(NodeId::from(1234567u32))
                             };
 
-                            error!("{:?} // Connection broken during reading. Deleting connection {:?} to node {:?}",
-                                    self.global_conns.own_id(), token,peer_id);
+                            error!("Connection broken during handling of connection event {:?}. Deleting connection {:?} to node {:?}.\
+                            Connection broken at written {:?} bytes, and had {:?} bytes left to write",
+                                    event, token,peer_id, written, to_write);
 
                             if let Err(err) = self.delete_connection(token, true) {
                                 error!(
@@ -269,22 +272,22 @@ where
                 token
             );
 
-            return Ok(ConnectionWorkResult::ConnectionBroken);
+            return Err(anyhow!("Received write event for non-existent connection"));
         };
 
         match &self.connections[token.into()] {
             SocketConnection::PeerConn { .. } => {
                 if event.is_readable() {
-                    if let ConnectionWorkResult::ConnectionBroken = self.read_until_block(token)? {
-                        return Ok(ConnectionWorkResult::ConnectionBroken);
+                    if let ConnectionWorkResult::ConnectionBroken(written, to_write) = self.read_until_block(token)? {
+                        return Ok(ConnectionWorkResult::ConnectionBroken(written, to_write));
                     }
                 }
 
                 if event.is_writable() {
-                    if let ConnectionWorkResult::ConnectionBroken =
+                    if let ConnectionWorkResult::ConnectionBroken(written, to_write) =
                         self.try_write_until_block(token)?
                     {
-                        return Ok(ConnectionWorkResult::ConnectionBroken);
+                        return Ok(ConnectionWorkResult::ConnectionBroken(written, to_write));
                     }
                 }
             }
@@ -308,7 +311,8 @@ where
                 token
             );
 
-            return Ok(ConnectionWorkResult::ConnectionBroken);
+            //FIXME: Replace with proper error
+            return Err(anyhow!("Received write event for non-existent connection"));
         };
 
         match connection {
@@ -368,8 +372,8 @@ where
                     };
 
                     match conn_util::try_write_until_block(socket, writing)? {
-                        ConnectionWriteWork::ConnectionBroken => {
-                            return Ok(ConnectionWorkResult::ConnectionBroken);
+                        ConnectionWriteWork::ConnectionBroken(written, to_write) => {
+                            return Ok(ConnectionWorkResult::ConnectionBroken(written, to_write));
                         }
                         ConnectionWriteWork::Working => {
                             break;
@@ -420,7 +424,7 @@ where
                 token
             );
 
-            return Ok(ConnectionWorkResult::ConnectionBroken);
+            return Err(anyhow!("Received read event for non-existent connection"));
         };
 
         match connection {
@@ -431,8 +435,8 @@ where
                 ..
             } => {
                 match conn_util::read_until_block(socket, reading_info)? {
-                    ConnectionReadWork::ConnectionBroken => {
-                        return Ok(ConnectionWorkResult::ConnectionBroken);
+                    ConnectionReadWork::ConnectionBroken(read, to_read) => {
+                        return Ok(ConnectionWorkResult::ConnectionBroken(read, to_read));
                     }
                     ConnectionReadWork::Working => {
                         return Ok(ConnectionWorkResult::Working);
