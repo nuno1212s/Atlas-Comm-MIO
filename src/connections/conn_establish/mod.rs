@@ -182,7 +182,7 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
         loop {
             match self.listener.accept() {
                 Ok((socket, addr)) => {
-                    trace!("{:?} // Received connection from {}", self.my_id, addr);
+                    debug!("{:?} // Received connection from {}", self.my_id, addr);
 
                     if self.currently_accepting.len() == DEFAULT_ALLOWED_CONCURRENT_JOINS {
                         // Ignore connections that would exceed our default concurrent join limit
