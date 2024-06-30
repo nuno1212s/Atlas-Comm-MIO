@@ -180,7 +180,6 @@ where
                                 error!(" Connection broken during writing after waker token. Deleting connection {:?} to node {:?}
                             Connection broken at written {:?} bytes, and had {:?} bytes left to write",
                                     token,peer_id, written, to_write);
-                                
                                 if let Err(err) = self.delete_connection(token, true) {
                                     error!("{:?} // Error deleting connection {:?} to node {:?}: {:?}",
                                         my_id, token, peer_id, err);
@@ -278,7 +277,9 @@ where
         match &self.connections[token.into()] {
             SocketConnection::PeerConn { .. } => {
                 if event.is_readable() {
-                    if let ConnectionWorkResult::ConnectionBroken(written, to_write) = self.read_until_block(token)? {
+                    if let ConnectionWorkResult::ConnectionBroken(written, to_write) =
+                        self.read_until_block(token)?
+                    {
                         return Ok(ConnectionWorkResult::ConnectionBroken(written, to_write));
                     }
                 }

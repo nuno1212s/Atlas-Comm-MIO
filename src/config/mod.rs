@@ -1,6 +1,6 @@
-use std::net::SocketAddr;
 use getset::{CopyGetters, Getters};
 use rustls::{ClientConfig, ServerConfig};
+use std::net::SocketAddr;
 
 /// The MIO configuration, necessary to initialize the MIO based TCP module
 #[derive(Getters, CopyGetters)]

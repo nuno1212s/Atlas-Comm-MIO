@@ -95,7 +95,10 @@ fn attempt_to_write_bytes_until_block(
     buffer: &Bytes,
 ) -> atlas_common::error::Result<InternalWorkResult> {
     match socket.write(&buffer[*written_bytes..]) {
-        Ok(0) => Ok(InternalWorkResult::ConnectionBroken(*written_bytes, buffer.len())),
+        Ok(0) => Ok(InternalWorkResult::ConnectionBroken(
+            *written_bytes,
+            buffer.len(),
+        )),
         Ok(n) => {
             // We have successfully written n bytes
             if n + *written_bytes < buffer.len() {
@@ -133,7 +136,10 @@ pub(crate) fn try_write_until_block(
                 header,
             )? {
                 InternalWorkResult::ConnectionBroken(written_bytes, total_bytes) => {
-                    return Ok(ConnectionWriteWork::ConnectionBroken(written_bytes, total_bytes))
+                    return Ok(ConnectionWriteWork::ConnectionBroken(
+                        written_bytes,
+                        total_bytes,
+                    ))
                 }
                 InternalWorkResult::Working => {}
                 InternalWorkResult::WouldBlock => break,
@@ -149,7 +155,10 @@ pub(crate) fn try_write_until_block(
                 msg_mod,
             )? {
                 InternalWorkResult::ConnectionBroken(written_bytes, total_bytes) => {
-                    return Ok(ConnectionWriteWork::ConnectionBroken(written_bytes, total_bytes))
+                    return Ok(ConnectionWriteWork::ConnectionBroken(
+                        written_bytes,
+                        total_bytes,
+                    ))
                 }
                 InternalWorkResult::Working => {}
                 InternalWorkResult::WouldBlock => break,
@@ -165,7 +174,10 @@ pub(crate) fn try_write_until_block(
                 &writing_buffer.current_message,
             )? {
                 InternalWorkResult::ConnectionBroken(written_bytes, total_bytes) => {
-                    return Ok(ConnectionWriteWork::ConnectionBroken(written_bytes, total_bytes))
+                    return Ok(ConnectionWriteWork::ConnectionBroken(
+                        written_bytes,
+                        total_bytes,
+                    ))
                 }
                 InternalWorkResult::Working => {}
                 InternalWorkResult::WouldBlock => break,
@@ -188,7 +200,12 @@ fn attempt_to_read_bytes_until_block(
 ) -> atlas_common::error::Result<InternalWorkResult> {
     let read = if bytes_to_read > 0 {
         match socket.read(&mut buffer[*read_bytes..]) {
-            Ok(0) => return Ok(InternalWorkResult::ConnectionBroken(*read_bytes, bytes_to_read)),
+            Ok(0) => {
+                return Ok(InternalWorkResult::ConnectionBroken(
+                    *read_bytes,
+                    bytes_to_read,
+                ))
+            }
             Ok(n) => n,
             Err(err) if would_block(&err) => return Ok(InternalWorkResult::WouldBlock),
             Err(err) if interrupted(&err) => return Ok(InternalWorkResult::Interrupted),
@@ -245,7 +262,10 @@ pub(crate) fn read_until_block(
                             // Connection closed
                             warn!("Connection closed while reading body bytes to read: {},  currently read: {}", bytes_to_read, currently_read);
 
-                            return Ok(ConnectionReadWork::ConnectionBroken(currently_read, bytes_to_read));
+                            return Ok(ConnectionReadWork::ConnectionBroken(
+                                currently_read,
+                                bytes_to_read,
+                            ));
                         }
                         Ok(n) => {
                             // We still have more to read
@@ -298,7 +318,10 @@ pub(crate) fn read_until_block(
                             // Connection closed
                             warn!("Connection closed while reading message module bytes to read: {},  currently read: {}", bytes_to_read, currently_read);
 
-                            return Ok(ConnectionReadWork::ConnectionBroken(currently_read, bytes_to_read));
+                            return Ok(ConnectionReadWork::ConnectionBroken(
+                                currently_read,
+                                bytes_to_read,
+                            ));
                         }
                         Ok(n) => {
                             // We still have more to read
@@ -358,7 +381,10 @@ pub(crate) fn read_until_block(
                     Ok(0) => {
                         // Connection closed
                         warn!("Connection closed while reading header bytes to read {}, current read bytes {}", bytes_to_read, currently_read_bytes);
-                        return Ok(ConnectionReadWork::ConnectionBroken(currently_read_bytes, bytes_to_read));
+                        return Ok(ConnectionReadWork::ConnectionBroken(
+                            currently_read_bytes,
+                            bytes_to_read,
+                        ));
                     }
                     Ok(n) => {
                         // We still have to more to read

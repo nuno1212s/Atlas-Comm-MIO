@@ -67,8 +67,8 @@ enum PendingConnection {
 }
 
 pub struct ServerWorker<NI, IS, CNP>
-    where
-        NI: NetworkInformationProvider,
+where
+    NI: NetworkInformationProvider,
 {
     my_id: NodeId,
     listener: MioListener,
@@ -91,10 +91,10 @@ enum ConnectionResult {
 }
 
 impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
-    where
-        NI: NetworkInformationProvider + 'static,
-        CN: NodeIncomingStub + 'static,
-        CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
+where
+    NI: NetworkInformationProvider + 'static,
+    CN: NodeIncomingStub + 'static,
+    CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
 {
     pub fn new(
         my_id: NodeId,
@@ -370,8 +370,7 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
             let connection_result = self.handle_connection_readable(token)?;
 
             match &connection_result {
-                ConnectionResult::Connected(_, _) |
-                ConnectionResult::ConnectionBroken(_, _) => {
+                ConnectionResult::Connected(_, _) | ConnectionResult::ConnectionBroken(_, _) => {
                     return Ok(connection_result);
                 }
                 _ => {}
@@ -509,7 +508,9 @@ impl<NI, CN, CNP> ServerWorker<NI, CN, CNP>
                 let read = conn_util::read_until_block(socket, read_buf)?;
 
                 match read {
-                    ConnectionReadWork::ConnectionBroken(read, to_read) => ConnectionResult::ConnectionBroken(read, to_read),
+                    ConnectionReadWork::ConnectionBroken(read, to_read) => {
+                        ConnectionResult::ConnectionBroken(read, to_read)
+                    }
                     ConnectionReadWork::Working => ConnectionResult::Working,
                     ConnectionReadWork::WorkingAndReceived(received)
                     | ConnectionReadWork::ReceivedAndDone(received) => {
@@ -584,8 +585,8 @@ impl ConnectionHandler {
     /// We may not be able to connect to a given node if the amount of connections
     /// being established already overtakes the limit of concurrent connections
     fn register_connecting_to_node<NI>(&self, peer_id: NodeId, network_info: &NI) -> bool
-        where
-            NI: NetworkInformationProvider,
+    where
+        NI: NetworkInformationProvider,
     {
         let mut connecting_guard = self.currently_connecting.lock().unwrap();
 
@@ -600,9 +601,9 @@ impl ConnectionHandler {
 
         if *value
             > self
-            .concurrent_conn
-            .get_connections_to_node(network_info.own_node_info().node_type(), other_node_type)
-            * 2
+                .concurrent_conn
+                .get_connections_to_node(network_info.own_node_info().node_type(), other_node_type)
+                * 2
         {
             *value -= 1;
 
@@ -633,10 +634,10 @@ impl ConnectionHandler {
         peer_id: NodeId,
         addr: PeerAddr,
     ) -> std::result::Result<OneShotRx<Result<()>>, ConnectionEstablishError>
-        where
-            NI: NetworkInformationProvider + 'static,
-            CN: NodeIncomingStub + 'static,
-            CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
+    where
+        NI: NetworkInformationProvider + 'static,
+        CN: NodeIncomingStub + 'static,
+        CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
     {
         let (tx, rx) = channel::new_oneshot_channel();
 
@@ -796,10 +797,10 @@ pub fn initialize_server<NI, CN, CNP>(
     network_info: Arc<NI>,
     conns: Arc<Connections<NI, CN, CNP>>,
 ) -> Arc<Waker>
-    where
-        NI: NetworkInformationProvider + 'static,
-        CN: NodeIncomingStub + 'static,
-        CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
+where
+    NI: NetworkInformationProvider + 'static,
+    CN: NodeIncomingStub + 'static,
+    CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
 {
     let mut server_worker = ServerWorker::new(
         my_id,
@@ -808,7 +809,7 @@ pub fn initialize_server<NI, CN, CNP>(
         network_info,
         conns,
     )
-        .unwrap();
+    .unwrap();
 
     let waker = server_worker.waker.clone();
 

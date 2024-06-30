@@ -277,7 +277,7 @@ impl MockNetworkInfoFactory {
                         format!("127.0.0.1:{}", Self::PORT + (node_id as u32)).parse()?,
                         String::from("localhost"),
                     ),
-                    None
+                    None,
                 ),
                 key: Arc::new(key),
             };
