@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use getset::{CopyGetters, Getters};
 use rustls::{ClientConfig, ServerConfig};
 
@@ -22,7 +23,11 @@ pub struct TlsConfig {
     pub sync_client_config: ClientConfig,
 }
 
+#[derive(Getters, CopyGetters)]
 pub struct TcpConfig {
+    /// Addresses to bind to
+    #[get = "pub"]
+    pub bind_addrs: Option<Vec<SocketAddr>>,
     /// Configurations specific to the networking
     pub network_config: TlsConfig,
     /// How many concurrent connections should be established between replica nodes of the system

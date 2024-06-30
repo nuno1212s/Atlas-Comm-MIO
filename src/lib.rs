@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use getset::Getters;
+use tracing::error;
 
 use atlas_common::error::*;
 use atlas_common::node_id::NodeId;
@@ -35,9 +36,9 @@ mod metrics;
 /// The CNP indicates the type for the stub controller of the upper network layer
 #[derive(Getters)]
 pub struct MIOTCPNode<NI, IS, CNP>
-where
-    NI: NetworkInformationProvider,
-    CNP: Clone,
+    where
+        NI: NetworkInformationProvider,
+        CNP: Clone,
 {
     #[get = "pub"]
     network_information: Arc<NI>,
@@ -47,9 +48,9 @@ where
 }
 
 impl<NI, IS, CNP> MIOTCPNode<NI, IS, CNP>
-where
-    CNP: Clone,
-    NI: NetworkInformationProvider,
+    where
+        CNP: Clone,
+        NI: NetworkInformationProvider,
 {
     fn setup_connection(_id: &NodeId, server_addr: &SocketAddr) -> Result<SyncListener> {
         socket::bind_sync_server(*server_addr).context(format!(
@@ -62,10 +63,10 @@ where
 pub type ByteStubType = ByteMessageSendStub;
 
 impl<NI, IS, CNP> ByteNetworkController for MIOTCPNode<NI, IS, CNP>
-where
-    NI: NetworkInformationProvider + 'static,
-    CNP: NodeStubController<ByteMessageSendStub, IS> + 'static,
-    IS: NodeIncomingStub + 'static,
+    where
+        NI: NetworkInformationProvider + 'static,
+        CNP: NodeStubController<ByteMessageSendStub, IS> + 'static,
+        IS: NodeIncomingStub + 'static,
 {
     type Config = MIOConfig;
 
@@ -78,19 +79,19 @@ where
 }
 
 impl<NI, IS, CNP> ByteNetworkControllerInit<NI, CNP, ByteMessageSendStub, IS>
-    for MIOTCPNode<NI, IS, CNP>
-where
-    NI: NetworkInformationProvider + 'static,
-    CNP: NodeStubController<ByteMessageSendStub, IS> + 'static,
-    IS: NodeIncomingStub + 'static,
+for MIOTCPNode<NI, IS, CNP>
+    where
+        NI: NetworkInformationProvider + 'static,
+        CNP: NodeStubController<ByteMessageSendStub, IS> + 'static,
+        IS: NodeIncomingStub + 'static,
 {
     fn initialize_controller(
         network_info: Arc<NI>,
         config: Self::Config,
         stub_controllers: CNP,
     ) -> Result<Self>
-    where
-        Self: Sized,
+        where
+            Self: Sized,
     {
         let (handle, receivers) = init_worker_group_handle::<IS>(config.epoll_worker_count());
 
@@ -105,9 +106,21 @@ where
 
         let node_info = network_info.own_node_info();
 
-        let listener = Self::setup_connection(&node_info.node_id(), node_info.addr().socket())?;
+        if let Some(addr) = config.tcp_configs().bind_addrs() {
+            addr.iter().for_each(|addr| {
+                match Self::setup_connection(&node_info.node_id(), addr) {
+                    Ok(listener) => connections.setup_tcp_worker(listener),
+                    Err(err) => {
+                        error!("Error while setting up bind addrs {:?}", err)
+                    }
+                };
+            });
+        } else {
+            let listener = Self::setup_connection(&node_info.node_id(), node_info.addr().socket())?;
 
-        connections.setup_tcp_worker(listener);
+            connections.setup_tcp_worker(listener);
+        };
+
 
         Ok(Self {
             network_information: network_info,
@@ -118,9 +131,9 @@ where
 }
 
 impl<NI, IS, CNP> Clone for MIOTCPNode<NI, IS, CNP>
-where
-    NI: NetworkInformationProvider,
-    CNP: Clone,
+    where
+        NI: NetworkInformationProvider,
+        CNP: Clone,
 {
     fn clone(&self) -> Self {
         Self {
