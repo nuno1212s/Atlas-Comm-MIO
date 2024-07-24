@@ -17,7 +17,7 @@ use crate::conn_util;
 use crate::conn_util::{ConnCounts, ConnMessage, ReadingBuffer, WritingBuffer};
 use crate::connections::conn_establish::{ConnectionEstablishError, ConnectionHandler};
 use crate::epoll::{EpollWorkerGroupHandle, EpollWorkerId, NewConnection};
-use crate::metrics::RQ_SEND_TIME_ID;
+use crate::metrics::{MESSAGE_DISPATCH_TIME_ID, MESSAGE_WAKER_TIME_ID, MESSAGES_IN_CHANNEL_ID, RQ_SEND_TIME_ID};
 use atlas_common::channel::{
     ChannelSyncRx, ChannelSyncTx, OneShotRx, TryRecvError, TrySendReturnError,
 };
@@ -29,7 +29,7 @@ use atlas_communication::byte_stub::connections::NetworkConnectionController;
 use atlas_communication::byte_stub::{DispatchError, NodeIncomingStub, NodeStubController};
 use atlas_communication::message::{NetworkSerializedMessage, WireMessage};
 use atlas_communication::reconfiguration::{NetworkInformationProvider, NodeInfo};
-use atlas_metrics::metrics::metric_duration;
+use atlas_metrics::metrics::{metric_duration, metric_store_count};
 
 pub(crate) mod conn_establish;
 
@@ -589,13 +589,13 @@ impl byte_stub::ByteNetworkStub for ByteMessageSendStub {
         self.0
             .send((message, Instant::now()))
             .context("Failed to send message to another node")?;
-
+        
         for entry in self.1.iter() {
             if let Some(conn) = entry.value() {
                 conn.waker.wake().context("Failed to wake worker")?;
             }
         }
-
+        
         Ok(())
     }
 }

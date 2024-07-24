@@ -33,7 +33,6 @@ use crate::conn_util::{
     ReadingBuffer, WritingBuffer,
 };
 use crate::connections::{ByteMessageSendStub, Connections};
-use crate::metrics::INCOMING_MESSAGE_SIZE_ID;
 
 const DEFAULT_ALLOWED_CONCURRENT_JOINS: usize = 128;
 // Since the tokens will always start at 0, we limit the amount of concurrent joins we can have
@@ -553,12 +552,9 @@ where
                         }
 
                         for message in received {
-                            metric_store_count_max(INCOMING_MESSAGE_SIZE_ID, message.payload().len());
-
                             self.peer_conns
                                 .loopback()
                                 .handle_message(&self.network_info, message)?;
-                            
                         }
 
                         ConnectionResult::Working

@@ -15,8 +15,6 @@ use std::io::{Read, Write};
 use std::mem::size_of;
 use std::time::Instant;
 use tracing::{debug, trace, warn};
-use atlas_metrics::metrics::metric_store_count_max;
-use crate::metrics::OUTGOING_MESSAGE_SIZE_ID;
 
 pub type Callback = Option<Box<dyn FnOnce(bool) + Send>>;
 
@@ -491,8 +489,6 @@ impl WritingBuffer {
         mod_bytes.resize(size_of::<MessageModule>(), 0);
 
         bincode::serde::encode_into_slice(module, &mut mod_bytes, bincode::config::standard())?;
-
-        metric_store_count_max(OUTGOING_MESSAGE_SIZE_ID, payload.len() + header_bytes.len() + mod_bytes.len());
         
         Ok(Self {
             written_bytes: 0,

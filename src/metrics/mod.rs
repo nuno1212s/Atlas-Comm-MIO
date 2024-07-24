@@ -4,11 +4,14 @@ use atlas_metrics::{MetricLevel, MetricRegistry};
 pub(crate) const RQ_SEND_TIME: &str = "REQUEST_SEND_TIME";
 pub(crate) const RQ_SEND_TIME_ID: usize = 1000;
 
-pub(crate) const OUTGOING_MESSAGE_SIZE: &str = "OUTGOING_MESSAGE_SIZE";
-pub(crate) const OUTGOING_MESSAGE_SIZE_ID: usize = 1001;
+pub(crate) const MESSAGES_IN_CHANNEL : &str = "MESSAGES_IN_CHANNEL";
+pub(crate) const MESSAGES_IN_CHANNEL_ID : usize = 1001;
 
-pub(crate) const INCOMING_MESSAGE_SIZE: &str = "INCOMING_MESSAGE_SIZE";
-pub(crate) const INCOMING_MESSAGE_SIZE_ID: usize = 1002;
+pub(crate) const MESSAGE_DISPATCH_TIME : &str = "MESSAGE_DISPATCH_TIME";
+pub(crate) const MESSAGE_DISPATCH_TIME_ID : usize = 1002;
+
+pub(crate) const MESSAGE_WAKER_TIME : &str = "MESSAGE_WAKER_TIME";
+pub(crate) const MESSAGE_WAKER_TIME_ID : usize = 1003;
 
 pub fn metrics() -> Vec<MetricRegistry> {
     vec![
@@ -20,18 +23,25 @@ pub fn metrics() -> Vec<MetricRegistry> {
         )
             .into(),
         (
-            OUTGOING_MESSAGE_SIZE_ID,
-            OUTGOING_MESSAGE_SIZE.to_string(),
-            MetricKind::CountMax(10),
+            MESSAGES_IN_CHANNEL_ID,
+            MESSAGES_IN_CHANNEL.to_string(),
+            MetricKind::Count,
             MetricLevel::Trace,
         )
             .into(),
         (
-            INCOMING_MESSAGE_SIZE_ID,
-            INCOMING_MESSAGE_SIZE.to_string(),
-            MetricKind::CountMax(10),
+            MESSAGE_DISPATCH_TIME_ID,
+            MESSAGE_DISPATCH_TIME.to_string(),
+            MetricKind::Duration,
             MetricLevel::Trace,
         )
             .into(),
+        (
+            MESSAGE_WAKER_TIME_ID,
+            MESSAGE_WAKER_TIME.to_string(),
+            MetricKind::Duration,
+            MetricLevel::Trace,
+        )
+            .into()
     ]
 }
