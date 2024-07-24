@@ -7,11 +7,10 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context};
 use getset::Getters;
-use log::{debug, info};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
 use rustls_pemfile::{read_one, Item};
-
+use tracing::{debug, info};
 use atlas_comm_mio::config::{MIOConfig, TcpConfig, TlsConfig};
 use atlas_comm_mio::ByteStubType;
 use atlas_common::channel;
@@ -214,6 +213,7 @@ fn default_config(node: u32) -> Result<MIOConfig> {
     Ok(MIOConfig {
         epoll_worker_count: 2,
         tcp_configs: TcpConfig {
+            bind_addrs: None,
             network_config: TlsConfig {
                 async_client_config: client_config.clone(),
                 async_server_config: server_config.clone(),
@@ -277,7 +277,6 @@ impl MockNetworkInfoFactory {
                         format!("127.0.0.1:{}", Self::PORT + (node_id as u32)).parse()?,
                         String::from("localhost"),
                     ),
-                    None,
                 ),
                 key: Arc::new(key),
             };
@@ -328,8 +327,7 @@ mod conn_test {
 
     use anyhow::{anyhow, Context};
     use bytes::Bytes;
-    use log::{debug, info, warn};
-
+    use tracing::{debug, info, warn};
     use atlas_comm_mio::MIOTCPNode;
     use atlas_common::error::*;
     use atlas_common::node_id::NodeId;
@@ -339,7 +337,6 @@ mod conn_test {
     };
     use atlas_communication::lookup_table::MessageModule;
     use atlas_communication::message::WireMessage;
-    use atlas_communication::reconfiguration::ReconfigurationMessageHandler;
 
     use crate::{
         default_config, MockNetworkInfo, MockNetworkInfoFactory, MockStubController, MockStubInput,
@@ -356,8 +353,6 @@ mod conn_test {
         for node in 0..node_count {
             // Initialize all of the nodes
             let node = NodeId::from(node);
-
-            let _reconf = ReconfigurationMessageHandler::initialize();
 
             let network_info = factory.generate_network_info_for(node)?;
 

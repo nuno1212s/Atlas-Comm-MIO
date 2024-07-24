@@ -122,7 +122,7 @@ where
         })
     }
 
-    #[instrument(level = Level::DEBUG)]
+    //#[instrument(level = Level::DEBUG)]
     pub(super) fn epoll_worker_loop(mut self) -> atlas_common::error::Result<()> {
         let mut event_queue = Events::with_capacity(EVENT_CAPACITY);
 
@@ -143,13 +143,13 @@ where
                 }
             }
 
-            trace!(
+            /*trace!(
                 "{:?} // Worker {}: Handling {} events {:?}",
                 self.global_conns.own_id(),
                 self.worker_id,
                 event_queue.iter().count(),
                 event_queue
-            );
+            );*/
 
             for event in event_queue.iter() {
                 if event.token() == waker_token {
@@ -256,7 +256,7 @@ where
         }
     }
 
-    #[instrument(level = Level::DEBUG)]
+    //#[instrument(level = Level::DEBUG)]
     fn handle_connection_event(
         &mut self,
         token: Token,
@@ -298,7 +298,7 @@ where
         Ok(ConnectionWorkResult::Working)
     }
 
-    #[instrument(level = Level::TRACE)]
+    //#[instrument(level = Level::TRACE)]
     fn try_write_until_block(
         &mut self,
         token: Token,
@@ -336,24 +336,24 @@ where
                         // We are not currently writing anything
 
                         if let Some(to_write) = connection.try_take_from_send()? {
-                            trace!(
+                            /*trace!(
                                 "{:?} // Writing message {:?}",
                                 self.global_conns.own_id(),
                                 to_write
-                            );
+                            );*/
                             wrote = true;
 
                             // We have something to write
                             *writing_info = Some(WritingBuffer::init_from_message(to_write)?);
-
+                            
                             writing_info.as_mut().unwrap()
                         } else {
                             // Nothing to write
-                            trace!(
+                            /*trace!(
                                 "{:?} // Nothing left to write, wrote? {}",
                                 self.global_conns.own_id(),
                                 wrote
-                            );
+                            );*/
 
                             // If we have written something in this loop but we have not written until
                             // Would block then we should flush the connection
@@ -411,7 +411,7 @@ where
         Ok(ConnectionWorkResult::Working)
     }
 
-    #[instrument(level = Level::TRACE)]
+    //#[instrument(level = Level::TRACE)]
     fn read_until_block(
         &mut self,
         token: Token,
@@ -462,7 +462,7 @@ where
     }
 
     /// Receive connections from the connection register and register them with the epoll instance
-    #[instrument(level = Level::TRACE)]
+    //#[instrument(level = Level::TRACE)]
     fn register_connections(&mut self) -> atlas_common::error::Result<()> {
         while let Ok(message) = self.conn_register.try_recv() {
             match message {
@@ -483,7 +483,7 @@ where
         Ok(())
     }
 
-    #[instrument(level = Level::TRACE)]
+    //#[instrument(level = Level::TRACE)]
     fn create_connection(&mut self, conn: NewConnection<CN>) -> atlas_common::error::Result<()> {
         let NewConnection {
             conn_id,
@@ -538,7 +538,7 @@ where
         Ok(())
     }
 
-    #[instrument(level = Level::DEBUG)]
+    //#[instrument(level = Level::DEBUG)]
     fn delete_connection(
         &mut self,
         token: Token,

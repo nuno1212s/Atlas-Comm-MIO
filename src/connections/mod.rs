@@ -1,18 +1,23 @@
 #![allow(dead_code)]
 
-use std::net::Shutdown;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Arc;
-
 use anyhow::Context;
 use crossbeam_skiplist::SkipMap;
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use getset::{CopyGetters, Getters};
 use mio::{Token, Waker};
+use std::net::Shutdown;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
+use std::time::Instant;
 use thiserror::Error;
 use tracing::{debug, error, info, instrument, warn};
 
+use crate::conn_util;
+use crate::conn_util::{ConnCounts, ConnMessage, ReadingBuffer, WritingBuffer};
+use crate::connections::conn_establish::{ConnectionEstablishError, ConnectionHandler};
+use crate::epoll::{EpollWorkerGroupHandle, EpollWorkerId, NewConnection};
+use crate::metrics::RQ_SEND_TIME_ID;
 use atlas_common::channel::{
     ChannelSyncRx, ChannelSyncTx, OneShotRx, TryRecvError, TrySendReturnError,
 };
@@ -24,11 +29,7 @@ use atlas_communication::byte_stub::connections::NetworkConnectionController;
 use atlas_communication::byte_stub::{DispatchError, NodeIncomingStub, NodeStubController};
 use atlas_communication::message::{NetworkSerializedMessage, WireMessage};
 use atlas_communication::reconfiguration::{NetworkInformationProvider, NodeInfo};
-
-use crate::conn_util;
-use crate::conn_util::{ConnCounts, ReadingBuffer, WritingBuffer};
-use crate::connections::conn_establish::{ConnectionEstablishError, ConnectionHandler};
-use crate::epoll::{EpollWorkerGroupHandle, EpollWorkerId, NewConnection};
+use atlas_metrics::metrics::metric_duration;
 
 pub(crate) mod conn_establish;
 
@@ -71,7 +72,7 @@ pub struct PeerConn<IS> {
     //The map connecting each connection to a token in the MIO Workers
     connections: Arc<SkipMap<u32, Option<ConnHandle>>>,
     // Sending messages to the connections
-    to_send: (ChannelSyncTx<WireMessage>, ChannelSyncRx<WireMessage>),
+    to_send: (ChannelSyncTx<ConnMessage>, ChannelSyncRx<ConnMessage>),
 }
 
 impl<NI, CN, CNP> Connections<NI, CN, CNP>
@@ -218,10 +219,7 @@ where
     fn preemptive_conn_register(
         self: &Arc<Self>,
         node: NodeId,
-        channel: (
-            ChannelSyncTx<NetworkSerializedMessage>,
-            ChannelSyncRx<NetworkSerializedMessage>,
-        ),
+        channel: (ChannelSyncTx<ConnMessage>, ChannelSyncRx<ConnMessage>),
     ) -> atlas_common::error::Result<Arc<PeerConn<CN>>> {
         debug!("Preemptively registering connection to node {:?}", node);
 
@@ -245,7 +243,7 @@ where
 
     /// Handle a given socket having established the necessary connection
     #[instrument(skip_all, fields(node_info =
-    tracing::field::debug(&node)))]
+    tracing::field::debug(& node)))]
     fn handle_connection_established(
         self: &Arc<Self>,
         node: NodeInfo,
@@ -279,17 +277,14 @@ where
     }
 
     #[instrument(skip_all, fields(node_info =
-    tracing::field::debug(&node)))]
+    tracing::field::debug(& node)))]
     fn handle_connection_established_with_socket(
         self: &Arc<Self>,
         node: NodeInfo,
         socket: MioSocket,
         reading_info: ReadingBuffer,
         writing_info: Option<WritingBuffer>,
-        channel: (
-            ChannelSyncTx<NetworkSerializedMessage>,
-            ChannelSyncRx<NetworkSerializedMessage>,
-        ),
+        channel: (ChannelSyncTx<ConnMessage>, ChannelSyncRx<ConnMessage>),
     ) -> atlas_common::error::Result<Arc<PeerConn<CN>>> {
         info!(
             "{:?} // Handling established connection to {:?}",
@@ -467,10 +462,7 @@ impl<ST> PeerConn<ST> {
         connected_peer_id: NodeId,
         byte_input_stub: ST,
         connections: Arc<SkipMap<u32, Option<ConnHandle>>>,
-        channel: (
-            ChannelSyncTx<NetworkSerializedMessage>,
-            ChannelSyncRx<NetworkSerializedMessage>,
-        ),
+        channel: (ChannelSyncTx<ConnMessage>, ChannelSyncRx<ConnMessage>),
     ) -> Self {
         Self {
             connected_peer_id,
@@ -508,6 +500,11 @@ impl<ST> PeerConn<ST> {
         self.to_send
             .1
             .recv()
+            .map(|msg| {
+                metric_duration(RQ_SEND_TIME_ID, msg.1.elapsed());
+
+                msg.0
+            })
             .context("Failed to take message from send queue")
     }
 
@@ -516,7 +513,11 @@ impl<ST> PeerConn<ST> {
         &self,
     ) -> atlas_common::error::Result<Option<NetworkSerializedMessage>> {
         match self.to_send.1.try_recv() {
-            Ok(msg) => Ok(Some(msg)),
+            Ok(msg) => {
+                metric_duration(RQ_SEND_TIME_ID, msg.1.elapsed());
+
+                Ok(Some(msg.0))
+            }
             Err(err) => match err {
                 TryRecvError::ChannelDc => Err!(MioError::FailedToRetrieveFromSendQueue),
                 TryRecvError::ChannelEmpty | TryRecvError::Timeout => Ok(None),
@@ -558,19 +559,19 @@ pub struct ConnHandle {
 /// A handle to a connection that is being established
 ///
 pub struct ByteMessageSendStub(
-    ChannelSyncTx<WireMessage>,
+    ChannelSyncTx<ConnMessage>,
     Arc<SkipMap<u32, Option<ConnHandle>>>,
 );
 
 impl byte_stub::ByteNetworkStub for ByteMessageSendStub {
     fn dispatch_message(&self, message: WireMessage) -> Result<(), DispatchError> {
-        if let Err(err) = self.0.try_send_return(message) {
+        if let Err(err) = self.0.try_send_return((message, Instant::now())) {
             return match err {
                 TrySendReturnError::Disconnected(_) | TrySendReturnError::Timeout(_) => {
                     Err!(DispatchError::InternalError(err.into()))
                 }
                 TrySendReturnError::Full(message) => {
-                    Err!(DispatchError::CouldNotDispatchTryLater(message))
+                    Err!(DispatchError::CouldNotDispatchTryLater(message.0))
                 }
             };
         }
@@ -586,7 +587,7 @@ impl byte_stub::ByteNetworkStub for ByteMessageSendStub {
 
     fn dispatch_blocking(&self, message: WireMessage) -> atlas_common::error::Result<()> {
         self.0
-            .send(message)
+            .send((message, Instant::now()))
             .context("Failed to send message to another node")?;
 
         for entry in self.1.iter() {

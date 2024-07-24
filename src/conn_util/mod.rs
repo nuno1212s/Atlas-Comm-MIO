@@ -6,16 +6,21 @@ use atlas_common::node_id::{NodeId, NodeType};
 use atlas_common::socket::MioSocket;
 use atlas_common::{channel, Err};
 use atlas_communication::lookup_table::MessageModule;
-use atlas_communication::message::{Header, WireMessage};
+use atlas_communication::message::{Header, NetworkSerializedMessage, WireMessage};
 
 use bytes::{Buf, Bytes, BytesMut};
 use getset::Getters;
 use std::io;
 use std::io::{Read, Write};
 use std::mem::size_of;
+use std::time::Instant;
 use tracing::{debug, trace, warn};
+use atlas_metrics::metrics::metric_store_count_max;
+use crate::metrics::OUTGOING_MESSAGE_SIZE_ID;
 
 pub type Callback = Option<Box<dyn FnOnce(bool) + Send>>;
+
+pub type ConnMessage = (NetworkSerializedMessage, Instant);
 
 /// The amount of parallel TCP connections we should try to maintain for
 /// each connection
@@ -249,12 +254,12 @@ pub(crate) fn read_until_block(
                 let currently_read = read_info.read_bytes;
                 let bytes_to_read = header.payload_length() - currently_read;
 
-                trace!(
+                /*trace!(
                     "Reading message with {} bytes to read payload {}, currently_read {}",
                     bytes_to_read,
                     header.payload_length(),
                     currently_read
-                );
+                );*/
 
                 let read = if bytes_to_read > 0 {
                     match socket.read(&mut read_info.reading_buffer[currently_read..]) {
@@ -306,11 +311,11 @@ pub(crate) fn read_until_block(
                 let currently_read = read_info.read_bytes;
                 let bytes_to_read = size_of::<MessageModule>() - currently_read;
 
-                trace!(
+                /*trace!(
                     "Reading message module with {} bytes to read, currently read {}",
                     bytes_to_read,
                     currently_read
-                );
+                );*/
 
                 let read = if bytes_to_read > 0 {
                     match socket.read(&mut read_info.reading_buffer[currently_read..]) {
@@ -339,7 +344,7 @@ pub(crate) fn read_until_block(
                     0
                 };
 
-                trace!("Read {} bytes from socket", read);
+                //trace!("Read {} bytes from socket", read);
 
                 if read >= bytes_to_read {
                     //FIXME: FIX THIS RIGHT NOW
@@ -375,7 +380,7 @@ pub(crate) fn read_until_block(
             let bytes_to_read = Header::LENGTH - currently_read_bytes;
 
             let read = if bytes_to_read > 0 {
-                trace!("Reading message header with {} left to read", bytes_to_read);
+                //trace!("Reading message header with {} left to read", bytes_to_read);
 
                 match socket.read(&mut read_info.reading_buffer[currently_read_bytes..]) {
                     Ok(0) => {
@@ -487,6 +492,8 @@ impl WritingBuffer {
 
         bincode::serde::encode_into_slice(module, &mut mod_bytes, bincode::config::standard())?;
 
+        metric_store_count_max(OUTGOING_MESSAGE_SIZE_ID, payload.len() + header_bytes.len() + mod_bytes.len());
+        
         Ok(Self {
             written_bytes: 0,
             current_header: Some(header_bytes.freeze()),
@@ -498,7 +505,7 @@ impl WritingBuffer {
 
 pub fn initialize_send_channel(
     peer: NodeId,
-) -> (ChannelSyncTx<WireMessage>, ChannelSyncRx<WireMessage>) {
+) -> (ChannelSyncTx<ConnMessage>, ChannelSyncRx<ConnMessage>) {
     channel::new_bounded_sync(
         2048,
         Some(format!("Network Peer Send Message {:?}", peer).as_str()),

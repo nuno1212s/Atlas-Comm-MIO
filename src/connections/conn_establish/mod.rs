@@ -26,13 +26,14 @@ use atlas_communication::byte_stub::{NodeIncomingStub, NodeStubController};
 use atlas_communication::lookup_table::MessageModule;
 use atlas_communication::message::{Header, NetworkSerializedMessage, WireMessage};
 use atlas_communication::reconfiguration::{NetworkInformationProvider, NodeInfo};
-
+use atlas_metrics::metrics::metric_store_count_max;
 use crate::conn_util;
 use crate::conn_util::{
-    interrupted, would_block, ConnCounts, ConnectionReadWork, ConnectionWriteWork, ReadingBuffer,
-    WritingBuffer,
+    interrupted, would_block, ConnCounts, ConnMessage, ConnectionReadWork, ConnectionWriteWork,
+    ReadingBuffer, WritingBuffer,
 };
 use crate::connections::{ByteMessageSendStub, Connections};
+use crate::metrics::INCOMING_MESSAGE_SIZE_ID;
 
 const DEFAULT_ALLOWED_CONCURRENT_JOINS: usize = 128;
 // Since the tokens will always start at 0, we limit the amount of concurrent joins we can have
@@ -57,10 +58,7 @@ enum PendingConnection {
         read_buf: ReadingBuffer,
         write_buf: Option<WritingBuffer>,
         /// The channel that can be used to push requests to this connected node (to be sent to them)
-        channel: Option<(
-            ChannelSyncTx<NetworkSerializedMessage>,
-            ChannelSyncRx<NetworkSerializedMessage>,
-        )>,
+        channel: Option<(ChannelSyncTx<ConnMessage>, ChannelSyncRx<ConnMessage>)>,
     },
     Waker,
     ServerToken,
@@ -416,18 +414,18 @@ where
 
                             match rx.try_recv() {
                                 Ok(to_write) => {
-                                    trace!("Writing message {:?}", to_write);
+                                    //trace!("Writing message {:?}", to_write);
                                     wrote = true;
 
                                     // We have something to write
                                     *write_buf =
-                                        Some(WritingBuffer::init_from_message(to_write).unwrap());
+                                        Some(WritingBuffer::init_from_message(to_write.0).unwrap());
 
                                     write_buf.as_mut().unwrap()
                                 }
                                 Err(_) => {
                                     // Nothing to write
-                                    trace!("Nothing left to write, wrote? {}", wrote);
+                                    //trace!("Nothing left to write, wrote? {}", wrote);
 
                                     // If we have written something in this loop but we have not written until
                                     // Would block then we should flush the connection
@@ -491,11 +489,11 @@ where
 
     fn handle_connection_readable(&mut self, token: Token) -> Result<ConnectionResult> {
         let connection = &mut self.currently_accepting[token.into()];
-        trace!(
+        /*trace!(
             "{:?} // Handling read event for connection {:?}",
             self.my_id,
             token
-        );
+        );*/
 
         let result = match connection {
             PendingConnection::PendingConn {
@@ -519,7 +517,7 @@ where
 
                             header.from()
                         } else {
-                            trace!("Received empty message from {:?}", token);
+                            //trace!("Received empty message from {:?}", token);
 
                             return Ok(ConnectionResult::Working);
                         };
@@ -555,9 +553,12 @@ where
                         }
 
                         for message in received {
+                            metric_store_count_max(INCOMING_MESSAGE_SIZE_ID, message.payload().len());
+
                             self.peer_conns
                                 .loopback()
                                 .handle_message(&self.network_info, message)?;
+                            
                         }
 
                         ConnectionResult::Working
@@ -829,13 +830,7 @@ where
 }
 
 impl PendingConnection {
-    fn fill_channel(
-        &mut self,
-        ch: (
-            ChannelSyncTx<NetworkSerializedMessage>,
-            ChannelSyncRx<NetworkSerializedMessage>,
-        ),
-    ) {
+    fn fill_channel(&mut self, ch: (ChannelSyncTx<ConnMessage>, ChannelSyncRx<ConnMessage>)) {
         match self {
             PendingConnection::PendingConn { channel, .. } => {
                 *channel = Some(ch);
