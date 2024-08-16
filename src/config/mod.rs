@@ -1,9 +1,10 @@
 use getset::{CopyGetters, Getters};
 use rustls::{ClientConfig, ServerConfig};
+use std::fmt::{Debug, Formatter};
 use std::net::SocketAddr;
 
 /// The MIO configuration, necessary to initialize the MIO based TCP module
-#[derive(Getters, CopyGetters)]
+#[derive(Getters, CopyGetters, Clone)]
 pub struct MIOConfig {
     #[get_copy = "pub"]
     pub epoll_worker_count: u32,
@@ -12,6 +13,7 @@ pub struct MIOConfig {
 }
 
 /// The TLS config struct
+#[derive(Clone)]
 pub struct TlsConfig {
     /// The TLS configuration used to connect to replica nodes. (from client nodes)
     pub async_client_config: ClientConfig,
@@ -23,7 +25,7 @@ pub struct TlsConfig {
     pub sync_client_config: ClientConfig,
 }
 
-#[derive(Getters, CopyGetters)]
+#[derive(Getters, CopyGetters, Clone)]
 pub struct TcpConfig {
     /// Addresses to bind to
     #[get = "pub"]
@@ -34,4 +36,29 @@ pub struct TcpConfig {
     pub replica_concurrent_connections: usize,
     /// How many client concurrent connections should be established between replica <-> client connections
     pub client_concurrent_connections: usize,
+}
+
+impl Debug for TcpConfig {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TcpConfig")
+            .field("bind_addrs", &self.bind_addrs)
+            .field(
+                "replica_concurrent_connections",
+                &self.replica_concurrent_connections,
+            )
+            .field(
+                "client_concurrent_connections",
+                &self.client_concurrent_connections,
+            )
+            .finish()
+    }
+}
+
+impl Debug for MIOConfig {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MIOConfig")
+            .field("epoll_worker_count", &self.epoll_worker_count)
+            .field("tcp_configs", &self.tcp_configs)
+            .finish()
+    }
 }

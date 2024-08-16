@@ -16,6 +16,12 @@ use slab::Slab;
 use thiserror::Error;
 use tracing::{debug, error, info, trace, warn};
 
+use crate::conn_util;
+use crate::conn_util::{
+    interrupted, would_block, ConnCounts, ConnMessage, ConnectionReadWork, ConnectionWriteWork,
+    ReadingBuffer, WritingBuffer,
+};
+use crate::connections::{ByteMessageSendStub, Connections};
 use atlas_common::channel::{ChannelSyncRx, ChannelSyncTx, OneShotRx};
 use atlas_common::error::*;
 use atlas_common::node_id::{NodeId, NodeType};
@@ -27,12 +33,6 @@ use atlas_communication::lookup_table::MessageModule;
 use atlas_communication::message::{Header, NetworkSerializedMessage, WireMessage};
 use atlas_communication::reconfiguration::{NetworkInformationProvider, NodeInfo};
 use atlas_metrics::metrics::metric_store_count_max;
-use crate::conn_util;
-use crate::conn_util::{
-    interrupted, would_block, ConnCounts, ConnMessage, ConnectionReadWork, ConnectionWriteWork,
-    ReadingBuffer, WritingBuffer,
-};
-use crate::connections::{ByteMessageSendStub, Connections};
 
 const DEFAULT_ALLOWED_CONCURRENT_JOINS: usize = 128;
 // Since the tokens will always start at 0, we limit the amount of concurrent joins we can have

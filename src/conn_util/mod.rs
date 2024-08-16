@@ -489,7 +489,7 @@ impl WritingBuffer {
         mod_bytes.resize(size_of::<MessageModule>(), 0);
 
         bincode::serde::encode_into_slice(module, &mut mod_bytes, bincode::config::standard())?;
-        
+
         Ok(Self {
             written_bytes: 0,
             current_header: Some(header_bytes.freeze()),

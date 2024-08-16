@@ -345,7 +345,7 @@ where
 
                             // We have something to write
                             *writing_info = Some(WritingBuffer::init_from_message(to_write)?);
-                            
+
                             writing_info.as_mut().unwrap()
                         } else {
                             // Nothing to write

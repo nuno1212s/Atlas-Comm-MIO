@@ -6,11 +6,6 @@ use std::iter;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context};
-use getset::Getters;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls::{ClientConfig, RootCertStore, ServerConfig};
-use rustls_pemfile::{read_one, Item};
-use tracing::{debug, info};
 use atlas_comm_mio::config::{MIOConfig, TcpConfig, TlsConfig};
 use atlas_comm_mio::ByteStubType;
 use atlas_common::channel;
@@ -23,6 +18,11 @@ use atlas_communication::byte_stub::{NodeIncomingStub, NodeStubController};
 use atlas_communication::message::WireMessage;
 use atlas_communication::reconfiguration;
 use atlas_communication::reconfiguration::NetworkInformationProvider;
+use getset::Getters;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::{ClientConfig, RootCertStore, ServerConfig};
+use rustls_pemfile::{read_one, Item};
+use tracing::{debug, info};
 
 #[derive(Clone, Getters)]
 struct MockStubController {
@@ -326,8 +326,6 @@ mod conn_test {
     use test_log::test;
 
     use anyhow::{anyhow, Context};
-    use bytes::Bytes;
-    use tracing::{debug, info, warn};
     use atlas_comm_mio::MIOTCPNode;
     use atlas_common::error::*;
     use atlas_common::node_id::NodeId;
@@ -337,6 +335,8 @@ mod conn_test {
     };
     use atlas_communication::lookup_table::MessageModule;
     use atlas_communication::message::WireMessage;
+    use bytes::Bytes;
+    use tracing::{debug, info, warn};
 
     use crate::{
         default_config, MockNetworkInfo, MockNetworkInfoFactory, MockStubController, MockStubInput,
