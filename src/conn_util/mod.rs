@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use crate::config::TcpConfig;
-use atlas_common::channel::{ChannelSyncRx, ChannelSyncTx};
+use atlas_common::channel::sync::{ChannelSyncRx, ChannelSyncTx};
 use atlas_common::node_id::{NodeId, NodeType};
 use atlas_common::socket::MioSocket;
 use atlas_common::{channel, Err};
@@ -14,7 +14,7 @@ use std::io;
 use std::io::{Read, Write};
 use std::mem::size_of;
 use std::time::Instant;
-use tracing::{debug, trace, warn};
+use tracing::{ trace, warn};
 
 pub type Callback = Option<Box<dyn FnOnce(bool) + Send>>;
 
@@ -502,7 +502,7 @@ impl WritingBuffer {
 pub fn initialize_send_channel(
     peer: NodeId,
 ) -> (ChannelSyncTx<ConnMessage>, ChannelSyncRx<ConnMessage>) {
-    channel::new_bounded_sync(
+    channel::sync::new_bounded_sync(
         2048,
         Some(format!("Network Peer Send Message {:?}", peer).as_str()),
     )

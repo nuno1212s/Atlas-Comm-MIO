@@ -22,7 +22,8 @@ use crate::conn_util::{
     ReadingBuffer, WritingBuffer,
 };
 use crate::connections::{ByteMessageSendStub, Connections};
-use atlas_common::channel::{ChannelSyncRx, ChannelSyncTx, OneShotRx};
+use atlas_common::channel::sync::{ChannelSyncRx, ChannelSyncTx};
+use atlas_common::channel::oneshot::OneShotRx;
 use atlas_common::error::*;
 use atlas_common::node_id::{NodeId, NodeType};
 use atlas_common::peer_addr::PeerAddr;
@@ -30,9 +31,8 @@ use atlas_common::socket::{MioListener, MioSocket, SecureSocket, SecureSocketSyn
 use atlas_common::{channel, prng, quiet_unwrap, socket, Err};
 use atlas_communication::byte_stub::{NodeIncomingStub, NodeStubController};
 use atlas_communication::lookup_table::MessageModule;
-use atlas_communication::message::{Header, NetworkSerializedMessage, WireMessage};
+use atlas_communication::message::{Header, WireMessage};
 use atlas_communication::reconfiguration::{NetworkInformationProvider, NodeInfo};
-use atlas_metrics::metrics::metric_store_count_max;
 
 const DEFAULT_ALLOWED_CONCURRENT_JOINS: usize = 128;
 // Since the tokens will always start at 0, we limit the amount of concurrent joins we can have
@@ -636,7 +636,7 @@ impl ConnectionHandler {
         CN: NodeIncomingStub + 'static,
         CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
     {
-        let (tx, rx) = channel::new_oneshot_channel();
+        let (tx, rx) = channel::oneshot::new_oneshot_channel();
 
         debug!(
             " {:?} // Connecting to node {:?} at {:?}",

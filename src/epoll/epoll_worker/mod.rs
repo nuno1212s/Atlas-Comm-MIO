@@ -7,7 +7,7 @@ use crate::conn_util::{
 use crate::connections::{ByteMessageSendStub, ConnHandle, Connections, PeerConn};
 use crate::epoll::{EpollWorkerId, EpollWorkerMessage, NewConnection};
 use anyhow::{anyhow, Context};
-use atlas_common::channel::ChannelSyncRx;
+use atlas_common::channel::sync::ChannelSyncRx;
 use atlas_common::node_id::NodeId;
 use atlas_common::socket::MioSocket;
 use atlas_common::Err;
@@ -23,8 +23,7 @@ use std::io::Write;
 use std::net::Shutdown;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::instrument;
-use tracing::{debug, error, info, trace, Level};
+use tracing::{debug, error, info};
 
 const EVENT_CAPACITY: usize = 1024;
 const DEFAULT_SOCKET_CAPACITY: usize = 1024;

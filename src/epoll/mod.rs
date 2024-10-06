@@ -5,7 +5,7 @@ use crate::connections::{ByteMessageSendStub, Connections, PeerConn};
 use crate::epoll::epoll_worker::EpollWorker;
 use anyhow::Context;
 use atlas_common::channel;
-use atlas_common::channel::{ChannelSyncRx, ChannelSyncTx};
+use atlas_common::channel::sync::{ChannelSyncRx, ChannelSyncTx};
 use atlas_common::node_id::NodeId;
 use atlas_common::socket::MioSocket;
 use atlas_communication::byte_stub::{NodeIncomingStub, NodeStubController};
@@ -36,7 +36,7 @@ pub(crate) fn init_worker_group_handle<CN>(
     let mut receivers = Vec::with_capacity(worker_count as usize);
 
     for _ in 0..worker_count {
-        let (tx, rx) = channel::new_bounded_sync(DEFAULT_WORK_CHANNEL, Some("Worker Group Handle"));
+        let (tx, rx) = channel::sync::new_bounded_sync(DEFAULT_WORK_CHANNEL, Some("Worker Group Handle"));
 
         workers.push(tx);
         receivers.push(rx);

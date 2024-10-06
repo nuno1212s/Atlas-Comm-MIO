@@ -17,12 +17,10 @@ use crate::conn_util;
 use crate::conn_util::{ConnCounts, ConnMessage, ReadingBuffer, WritingBuffer};
 use crate::connections::conn_establish::{ConnectionEstablishError, ConnectionHandler};
 use crate::epoll::{EpollWorkerGroupHandle, EpollWorkerId, NewConnection};
-use crate::metrics::{
-    MESSAGES_IN_CHANNEL_ID, MESSAGE_DISPATCH_TIME_ID, MESSAGE_WAKER_TIME_ID, RQ_SEND_TIME_ID,
-};
-use atlas_common::channel::{
-    ChannelSyncRx, ChannelSyncTx, OneShotRx, TryRecvError, TrySendReturnError,
-};
+use crate::metrics::{RQ_SEND_TIME_ID};
+use atlas_common::channel::sync::{ChannelSyncRx, ChannelSyncTx};
+use atlas_common::channel::oneshot::OneShotRx;
+use atlas_common::channel::{ TryRecvError, TrySendReturnError, };
 use atlas_common::node_id::{NodeId, NodeType};
 use atlas_common::socket::{MioSocket, SecureSocket, SecureSocketSync, SyncListener};
 use atlas_common::Err;
@@ -31,7 +29,7 @@ use atlas_communication::byte_stub::connections::NetworkConnectionController;
 use atlas_communication::byte_stub::{DispatchError, NodeIncomingStub, NodeStubController};
 use atlas_communication::message::{NetworkSerializedMessage, WireMessage};
 use atlas_communication::reconfiguration::{NetworkInformationProvider, NodeInfo};
-use atlas_metrics::metrics::{metric_duration, metric_store_count};
+use atlas_metrics::metrics::{metric_duration};
 
 pub(crate) mod conn_establish;
 
