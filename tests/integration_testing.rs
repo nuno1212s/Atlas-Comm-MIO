@@ -9,7 +9,7 @@ use anyhow::{anyhow, Context};
 use atlas_comm_mio::config::{MIOConfig, TcpConfig, TlsConfig};
 use atlas_comm_mio::ByteStubType;
 use atlas_common::channel;
-use atlas_common::channel::{ChannelSyncRx, ChannelSyncTx};
+use atlas_common::channel::sync::{ChannelSyncRx, ChannelSyncTx};
 use atlas_common::crypto::signature::{KeyPair, PublicKey};
 use atlas_common::error::*;
 use atlas_common::node_id::{NodeId, NodeType};
@@ -59,7 +59,7 @@ impl NodeIncomingStub for MockStubInput {
 
 impl MockStubController {
     fn new(node_id: NodeId) -> Self {
-        let (tx, rx) = channel::new_bounded_sync(32, Some("MockStubController"));
+        let (tx, rx) = channel::sync::new_bounded_sync(32, Some("MockStubController"));
         let stubs = Arc::new(Mutex::new(Default::default()));
 
         Self {
