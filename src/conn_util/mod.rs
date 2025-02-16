@@ -14,7 +14,7 @@ use std::io;
 use std::io::{Read, Write};
 use std::mem::size_of;
 use std::time::Instant;
-use tracing::{ trace, warn};
+use tracing::{trace, warn};
 
 pub type Callback = Option<Box<dyn FnOnce(bool) + Send>>;
 

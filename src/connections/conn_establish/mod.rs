@@ -22,8 +22,8 @@ use crate::conn_util::{
     ReadingBuffer, WritingBuffer,
 };
 use crate::connections::{ByteMessageSendStub, Connections};
-use atlas_common::channel::sync::{ChannelSyncRx, ChannelSyncTx};
 use atlas_common::channel::oneshot::OneShotRx;
+use atlas_common::channel::sync::{ChannelSyncRx, ChannelSyncTx};
 use atlas_common::error::*;
 use atlas_common::node_id::{NodeId, NodeType};
 use atlas_common::peer_addr::PeerAddr;
