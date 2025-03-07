@@ -34,7 +34,7 @@ either = "1.9.0"
 smallvec = "1.10.0"
 crossbeam-skiplist = "0.1"
 dashmap = "*"
-bincode = "2.0.0-rc.3"
+bincode = "2"
 serde = "1"
 
 rustls = "0"
