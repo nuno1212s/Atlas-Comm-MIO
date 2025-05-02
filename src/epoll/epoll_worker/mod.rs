@@ -142,14 +142,6 @@ where
                 }
             }
 
-            /*trace!(
-                "{:?} // Worker {}: Handling {} events {:?}",
-                self.global_conns.own_id(),
-                self.worker_id,
-                event_queue.iter().count(),
-                event_queue
-            );*/
-
             for event in event_queue.iter() {
                 if event.token() == waker_token {
                     // Indicates that we should try to write from the connections
@@ -157,15 +149,18 @@ where
                     // This is a bit of a hack, but we need to do this in order to avoid issues with the borrow
                     // Checker, since we would have to pass a mutable reference while holding immutable references.
                     // It's stupid but it is what it is
-                    let mut to_verify = Vec::with_capacity(self.connections.len());
-
-                    self.connections.iter().for_each(|(slot, conn)| {
-                        let token = Token(slot);
-
-                        if let SocketConnection::PeerConn { .. } = conn {
-                            to_verify.push(token);
-                        }
-                    });
+                    
+                    let to_verify = self.connections
+                        .iter()
+                        .filter_map(|(slot, conn)| {
+                            let token = Token(slot);
+                            
+                            if let SocketConnection::PeerConn { .. } = conn {
+                                Some(token)
+                            } else {
+                                None
+                            }
+                        }).collect::<Vec<_>>();
 
                     to_verify.into_iter().for_each(|token| {
                         match self.try_write_until_block(token) {
