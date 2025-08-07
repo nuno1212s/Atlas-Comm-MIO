@@ -41,7 +41,7 @@ struct MockStubController {
 struct MockStubInput(NodeId, ChannelSyncTx<WireMessage>);
 
 #[derive(Clone)]
-struct MockStubOutput(NodeId, ByteStubType);
+struct MockStubOutput(ByteStubType);
 
 #[derive(Clone)]
 struct MockStub(MockStubInput, MockStubOutput);
@@ -93,11 +93,14 @@ impl NodeStubController<ByteStubType, MockStubInput> for MockStubController {
     fn generate_stub_for(&self, node: NodeId, byte_stub: ByteStubType) -> Result<MockStubInput> {
         let input_stub = self.create_stub_for(node);
 
-        let output_stub = MockStubOutput(node, byte_stub);
+        let output_stub = MockStubOutput(byte_stub);
 
         let stub = MockStub(input_stub.clone(), output_stub);
 
-        self.stubs.lock().unwrap().insert(node, stub);
+        self.stubs
+            .lock()
+            .map_err(|err| anyhow!(err.to_string()))?
+            .insert(node, stub);
 
         Ok(input_stub)
     }
@@ -227,9 +230,10 @@ fn default_config(node: u32) -> Result<MIOConfig> {
 }
 
 #[derive(Getters, Clone)]
-#[get = "pub(crate)"]
 pub struct NodeInfo<K> {
+    #[get = "pub(crate)"]
     node_info: reconfiguration::NodeInfo,
+    #[get = "pub(crate)"]
     key: K,
 }
 
@@ -266,22 +270,23 @@ impl MockNetworkInfoFactory {
         let mut map = BTreeMap::default();
 
         for node_id in 0..node_count {
+            let node_id = u32::try_from(node_id).expect("Failed to convert node_id to u32");
             let key = KeyPair::from_bytes(buf.as_slice())?;
 
             let info = NodeInfo {
                 node_info: reconfiguration::NodeInfo::new(
-                    NodeId::from(node_id as u32),
+                    NodeId::from(node_id),
                     NodeType::Replica,
                     PublicKey::from(key.public_key()),
                     PeerAddr::new(
-                        format!("127.0.0.1:{}", Self::PORT + (node_id as u32)).parse()?,
+                        format!("127.0.0.1:{}", Self::PORT + (node_id)).parse()?,
                         String::from("localhost"),
                     ),
                 ),
                 key: Arc::new(key),
             };
 
-            map.insert(info.node_info.node_id(), info);
+            map.insert(NodeId(node_id), info);
         }
 
         Ok(Self { nodes: map })
@@ -378,13 +383,10 @@ mod conn_test {
 
         let mod_bytes = Bytes::from(vec);
 
-        println!("Mod bytes {:x?}", mod_bytes);
+        println!("Mod bytes {mod_bytes:x?}");
 
         let (de_ser_msg_mod, _msg_mod_size): (MessageModule, usize) =
-            bincode::serde::decode_borrowed_from_slice(
-                mod_bytes.as_ref(),
-                bincode::config::standard(),
-            )?;
+            bincode::serde::decode_from_slice(mod_bytes.as_ref(), bincode::config::standard())?;
 
         assert_eq!(de_ser_msg_mod, msg_mod);
 
@@ -418,14 +420,10 @@ mod conn_test {
                     .connection_controller()
                     .connect_to_node(other_node_id)?
                 {
-                    result_wait
-                        .recv()
-                        .unwrap()
-                        .context(format!(
-                            "Failed to receive result of connecting to node {:?}",
-                            other_node_id
-                        ))
-                        .unwrap();
+                    result_wait.recv()?.context(format!(
+                        "Failed to receive result of connecting to node {:?}",
+                        other_node_id
+                    ))?;
                 }
             }
         }
@@ -502,7 +500,7 @@ mod conn_test {
             None,
         );
 
-        output_tx.1.dispatch_message(wire_msg)?;
+        output_tx.0.dispatch_message(wire_msg)?;
 
         let message = node_1
             .stub_controller()

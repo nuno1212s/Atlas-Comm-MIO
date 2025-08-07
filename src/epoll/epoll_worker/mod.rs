@@ -149,20 +149,22 @@ where
                     // This is a bit of a hack, but we need to do this in order to avoid issues with the borrow
                     // Checker, since we would have to pass a mutable reference while holding immutable references.
                     // It's stupid but it is what it is
-                    
-                    let to_verify = self.connections
+
+                    let to_verify = self
+                        .connections
                         .iter()
                         .filter_map(|(slot, conn)| {
                             let token = Token(slot);
-                            
+
                             if let SocketConnection::PeerConn { .. } = conn {
                                 Some(token)
                             } else {
                                 None
                             }
-                        }).collect::<Vec<_>>();
+                        })
+                        .collect::<Vec<_>>();
 
-                    to_verify.into_iter().for_each(|token| {
+                    for token in to_verify {
                         match self.try_write_until_block(token) {
                             Ok(ConnectionWorkResult::ConnectionBroken(written, to_write)) => {
                                 let peer_id = {
@@ -175,8 +177,10 @@ where
                             Connection broken at written {:?} bytes, and had {:?} bytes left to write",
                                     token,peer_id, written, to_write);
                                 if let Err(err) = self.delete_connection(token, true) {
-                                    error!("{:?} // Error deleting connection {:?} to node {:?}: {:?}",
-                                        my_id, token, peer_id, err);
+                                    error!(
+                                        "{:?} // Error deleting connection {:?} to node {:?}: {:?}",
+                                        my_id, token, peer_id, err
+                                    );
                                 }
                             }
                             Ok(_) => {}
@@ -191,12 +195,14 @@ where
                                             my_id, err, token, peer_id);
 
                                 if let Err(err) = self.delete_connection(token, true) {
-                                    error!("{:?} // Error deleting connection {:?} to node {:?}: {:?}",
-                                        my_id, token, peer_id, err);
+                                    error!(
+                                        "{:?} // Error deleting connection {:?} to node {:?}: {:?}",
+                                        my_id, token, peer_id, err
+                                    );
                                 }
                             }
                         };
-                    });
+                    }
                 } else {
                     let token = event.token();
 
@@ -588,7 +594,7 @@ impl<CN> Debug for NewConnection<CN> {
             .field("conn_id", &self.conn_id)
             .field("peer_id", &self.peer_id)
             .field("my_id", &self.my_id)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -600,6 +606,6 @@ where
         f.debug_struct("EpollWorker")
             .field("worker_id", &self.worker_id)
             .field("managed_conns", &self.connections.len())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
