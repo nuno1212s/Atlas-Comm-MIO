@@ -6,6 +6,7 @@ use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use getset::{CopyGetters, Getters};
 use mio::{Token, Waker};
+use std::error::Error;
 use std::net::Shutdown;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -16,7 +17,7 @@ use tracing::{debug, error, info, instrument, warn};
 use crate::conn_util;
 use crate::conn_util::{ConnCounts, ConnMessage, ReadingBuffer, WritingBuffer};
 use crate::connections::conn_establish::{ConnectionEstablishError, ConnectionHandler};
-use crate::epoll::{EpollWorkerGroupHandle, EpollWorkerId, NewConnection};
+use crate::epoll::{EpollWorkerGroupHandle, EpollWorkerId, NewConnection, WorkerError};
 use crate::metrics::RQ_SEND_TIME_ID;
 use atlas_common::channel::oneshot::OneShotRx;
 use atlas_common::channel::sync::{ChannelSyncRx, ChannelSyncTx};
@@ -142,7 +143,10 @@ where
     fn internal_connect_to_node(
         self: &Arc<Self>,
         node: NodeId,
-    ) -> Result<Vec<OneShotRx<atlas_common::error::Result<()>>>, ConnectionError> {
+    ) -> Result<
+        Vec<OneShotRx<Result<(), ConnectionEstablishError<CNP::Error>>>>,
+        ConnectionError<CNP::Error>,
+    > {
         if node == self.own_id {
             return Err!(ConnectionError::ConnectToSelf);
         }
@@ -193,10 +197,12 @@ where
         Ok(result_vec)
     }
 
-    fn dc_from_node(&self, node: &NodeId) -> atlas_common::error::Result<()> {
+    fn dc_from_node(&self, node: &NodeId) -> Result<(), ConnectionError<CNP::Error>> {
         let existing_connection = self.registered_connections.remove(node);
 
-        self.stub_controller.shutdown_stubs_for(node);
+        self.stub_controller
+            .shutdown_stubs_for(node)
+            .map_err(ConnectionError::FailedToShutdownStubs)?;
 
         if let Some((_node, connection)) = existing_connection {
             for entry in connection.connections.iter() {
@@ -250,7 +256,7 @@ where
         socket: SecureSocket,
         reading_info: ReadingBuffer,
         writing_info: Option<WritingBuffer>,
-    ) -> atlas_common::error::Result<()> {
+    ) -> Result<(), HandleConnectionError<CNP::Error>> {
         let socket = match socket {
             SecureSocket::Sync(sync) => match sync {
                 SecureSocketSync::Plain(socket) => socket,
@@ -285,7 +291,7 @@ where
         reading_info: ReadingBuffer,
         writing_info: Option<WritingBuffer>,
         channel: (ChannelSyncTx<ConnMessage>, ChannelSyncRx<ConnMessage>),
-    ) -> atlas_common::error::Result<Arc<PeerConn<CN>>> {
+    ) -> Result<Arc<PeerConn<CN>>, HandleConnectionError<CNP::Error>> {
         info!(
             "{:?} // Handling established connection to {:?}",
             self.own_id, node
@@ -305,7 +311,8 @@ where
                         let byte_stub = ByteMessageSendStub(channel.0.clone(), connections.clone());
 
                         self.stub_controller
-                            .generate_stub_for(node.node_id(), byte_stub)?
+                            .generate_stub_for(node.node_id(), byte_stub)
+                            .map_err(HandleConnectionError::GenerateStubError)?
                     }
                     Some(_) => {
                         unreachable!("We should never have a stub for a node that we don't have a connection to")
@@ -431,6 +438,9 @@ where
     IS: NodeIncomingStub + 'static,
     CNP: NodeStubController<ByteMessageSendStub, IS> + 'static,
 {
+    type IndConnError = ConnectionEstablishError<CNP::Error>;
+    type ConnectionError = ConnectionError<CNP::Error>;
+
     fn has_connection(&self, node: &NodeId) -> bool {
         self.is_connected_to_node(node)
     }
@@ -446,13 +456,19 @@ where
     fn connect_to_node(
         self: &Arc<Self>,
         node: NodeId,
-    ) -> atlas_common::error::Result<Vec<OneShotRx<atlas_common::error::Result<()>>>> {
+    ) -> Result<
+        Vec<OneShotRx<Result<(), ConnectionEstablishError<CNP::Error>>>>,
+        ConnectionError<CNP::Error>,
+    > {
         let conn_results = self.internal_connect_to_node(node)?;
 
         Ok(conn_results)
     }
 
-    fn disconnect_from_node(self: &Arc<Self>, node: &NodeId) -> atlas_common::error::Result<()> {
+    fn disconnect_from_node(
+        self: &Arc<Self>,
+        node: &NodeId,
+    ) -> Result<(), ConnectionError<CNP::Error>> {
         self.dc_from_node(node)
     }
 }
@@ -509,9 +525,7 @@ impl<ST> PeerConn<ST> {
     }
 
     /// Attempt to take a message from the send queue (non blocking)
-    pub(super) fn try_take_from_send(
-        &self,
-    ) -> atlas_common::error::Result<Option<NetworkSerializedMessage>> {
+    pub(super) fn try_take_from_send(&self) -> Result<Option<NetworkSerializedMessage>, MioError> {
         match self.to_send.1.try_recv() {
             Ok(msg) => {
                 metric_duration(RQ_SEND_TIME_ID, msg.1.elapsed());
@@ -519,7 +533,7 @@ impl<ST> PeerConn<ST> {
                 Ok(Some(msg.0))
             }
             Err(err) => match err {
-                TryRecvError::ChannelDc => Err!(MioError::FailedToRetrieveFromSendQueue),
+                TryRecvError::ChannelDc => Err(MioError::FailedToRetrieveFromSendQueue),
                 TryRecvError::ChannelEmpty | TryRecvError::Timeout => Ok(None),
             },
         }
@@ -564,35 +578,35 @@ pub struct ByteMessageSendStub(
 );
 
 impl byte_stub::ByteNetworkStub for ByteMessageSendStub {
+    type Error = DispatchError;
+
     fn dispatch_message(&self, message: WireMessage) -> Result<(), DispatchError> {
         if let Err(err) = self.0.try_send_return((message, Instant::now())) {
             return match err {
                 TrySendReturnError::Disconnected(_) | TrySendReturnError::Timeout(_) => {
-                    Err!(DispatchError::InternalError(err.into()))
+                    Err(DispatchError::TrySendError(err.into()))
                 }
                 TrySendReturnError::Full(message) => {
-                    Err!(DispatchError::CouldNotDispatchTryLater(message.0))
+                    Err(DispatchError::CouldNotDispatchTryLater(message.0))
                 }
             };
         }
 
         for entry in self.1.iter() {
             if let Some(conn) = entry.value() {
-                conn.waker.wake().context("Failed to wake worker")?;
+                conn.waker.wake()?;
             }
         }
 
         Ok(())
     }
 
-    fn dispatch_blocking(&self, message: WireMessage) -> atlas_common::error::Result<()> {
-        self.0
-            .send((message, Instant::now()))
-            .context("Failed to send message to another node")?;
+    fn dispatch_blocking(&self, message: WireMessage) -> Result<(), DispatchError> {
+        self.0.send((message, Instant::now()))?;
 
         for entry in self.1.iter() {
             if let Some(conn) = entry.value() {
-                conn.waker.wake().context("Failed to wake worker")?;
+                conn.waker.wake()?;
             }
         }
 
@@ -632,13 +646,27 @@ impl ConnHandle {
 }
 
 #[derive(Error, Debug)]
+pub enum HandleConnectionError<CNPE>
+where
+    CNPE: Error,
+{
+    #[error("Failed to generate stub due to error: {0}")]
+    GenerateStubError(CNPE),
+    #[error("Failed to assign socket to worker due to error {0}")]
+    Worker(#[from] WorkerError),
+}
+
+#[derive(Error, Debug)]
 pub enum MioError {
     #[error("Failed to retrieve message from the send queue")]
     FailedToRetrieveFromSendQueue,
 }
 
 #[derive(Error, Debug)]
-pub enum ConnectionError {
+pub enum ConnectionError<CNPE>
+where
+    CNPE: Error,
+{
     #[error("Cannot connect to ourselves")]
     ConnectToSelf,
     #[error("Node info for node {0:?} is not found")]
@@ -646,5 +674,9 @@ pub enum ConnectionError {
     #[error("Failed to connect to node {0:?} as we are both clients")]
     ClientCannotConnectToClient(NodeId),
     #[error("Failed to connect to node due to internal error {0:?}")]
-    InternalConnError(#[from] ConnectionEstablishError),
+    InternalConnError(#[from] ConnectionEstablishError<CNPE>),
+    #[error("Failed disconnecting from worker due to error {0:?}")]
+    DisconnectWorkerError(#[from] WorkerError),
+    #[error("Failed to shutdown stubs due to error {0:?}")]
+    FailedToShutdownStubs(CNPE),
 }

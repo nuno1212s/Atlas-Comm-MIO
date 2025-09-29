@@ -2,9 +2,10 @@
 
 use crate::conn_util;
 use crate::conn_util::{
-    interrupted, would_block, ConnectionReadWork, ConnectionWriteWork, ReadingBuffer, WritingBuffer,
+    interrupted, would_block, ConnectionReadWork, ConnectionWriteWork, ReadMessageError,
+    ReadingBuffer, WritingBuffer, WritingBufferError,
 };
-use crate::connections::{ByteMessageSendStub, ConnHandle, Connections, PeerConn};
+use crate::connections::{ByteMessageSendStub, ConnHandle, Connections, MioError, PeerConn};
 use crate::epoll::{EpollWorkerId, EpollWorkerMessage, NewConnection};
 use anyhow::{anyhow, Context};
 use atlas_common::channel::sync::ChannelSyncRx;
@@ -12,6 +13,7 @@ use atlas_common::node_id::NodeId;
 use atlas_common::socket::MioSocket;
 use atlas_common::Err;
 use atlas_communication::byte_stub::{NodeIncomingStub, NodeStubController};
+use std::error::Error;
 use std::fmt::{Debug, Formatter};
 
 use atlas_communication::reconfiguration::NetworkInformationProvider;
@@ -23,6 +25,7 @@ use std::io::Write;
 use std::net::Shutdown;
 use std::sync::Arc;
 use std::time::Duration;
+use thiserror::Error;
 use tracing::{debug, error, info};
 
 const EVENT_CAPACITY: usize = 1024;
@@ -86,11 +89,8 @@ where
         worker_id: EpollWorkerId,
         connections: Arc<Connections<NI, CN, CNP>>,
         register: ChannelSyncRx<EpollWorkerMessage<CN>>,
-    ) -> atlas_common::error::Result<Self> {
-        let poll = Poll::new().context(format!(
-            "Failed to initialize poll for worker {:?}",
-            worker_id
-        ))?;
+    ) -> Result<Self, io::Error> {
+        let poll = Poll::new()?;
 
         let mut conn_slab = Slab::with_capacity(DEFAULT_SOCKET_CAPACITY);
 
@@ -98,8 +98,7 @@ where
 
         let waker_token = Token(entry.key());
         let waker = Arc::new(
-            Waker::new(poll.registry(), waker_token)
-                .context(format!("Failed to create waker for worker {:?}", worker_id))?,
+            Waker::new(poll.registry(), waker_token)?,
         );
 
         entry.insert(SocketConnection::Waker);
@@ -122,7 +121,7 @@ where
     }
 
     //#[instrument(level = Level::DEBUG)]
-    pub(super) fn epoll_worker_loop(mut self) -> atlas_common::error::Result<()> {
+    pub(super) fn epoll_worker_loop(mut self) -> Result<(), WorkerLoopError<CN::Error>> {
         let mut event_queue = Events::with_capacity(EVENT_CAPACITY);
 
         let my_id = self.global_conns.own_id();
@@ -138,7 +137,7 @@ where
                     // *should* be handled by mio and return Ok() with no events
                     continue;
                 } else {
-                    return Err!(e);
+                    return Err(e.into());
                 }
             }
 
@@ -261,7 +260,7 @@ where
         &mut self,
         token: Token,
         event: &Event,
-    ) -> atlas_common::error::Result<ConnectionWorkResult> {
+    ) -> Result<ConnectionWorkResult, HandleConnEventError<CN::Error>> {
         let _connection = if self.connections.contains(token.into()) {
             &self.connections[token.into()]
         } else {
@@ -271,7 +270,9 @@ where
                 token
             );
 
-            return Err(anyhow!("Received write event for non-existent connection"));
+            return Err(HandleConnEventError::ReceivedEventForNonExistentConnection(
+                token,
+            ));
         };
 
         match &self.connections[token.into()] {
@@ -299,10 +300,7 @@ where
     }
 
     //#[instrument(level = Level::TRACE)]
-    fn try_write_until_block(
-        &mut self,
-        token: Token,
-    ) -> atlas_common::error::Result<ConnectionWorkResult> {
+    fn try_write_until_block(&mut self, token: Token) -> Result<ConnectionWorkResult, WriteError> {
         let connection = if self.connections.contains(token.into()) {
             &mut self.connections[token.into()]
         } else {
@@ -312,8 +310,7 @@ where
                 token
             );
 
-            //FIXME: Replace with proper error
-            return Err(anyhow!("Received write event for non-existent connection"));
+            return Err(WriteError::ReceivedReadEventForNonExistentConnection(token));
         };
 
         match connection {
@@ -329,18 +326,11 @@ where
                 loop {
                     let writing = if let Some(writing_info) = writing_info {
                         wrote = true;
-
                         //We are writing something
                         writing_info
                     } else {
                         // We are not currently writing anything
-
                         if let Some(to_write) = connection.try_take_from_send()? {
-                            /*trace!(
-                                "{:?} // Writing message {:?}",
-                                self.global_conns.own_id(),
-                                to_write
-                            );*/
                             wrote = true;
 
                             // We have something to write
@@ -348,13 +338,6 @@ where
 
                             writing_info.as_mut().unwrap()
                         } else {
-                            // Nothing to write
-                            /*trace!(
-                                "{:?} // Nothing left to write, wrote? {}",
-                                self.global_conns.own_id(),
-                                wrote
-                            );*/
-
                             // If we have written something in this loop but we have not written until
                             // Would block then we should flush the connection
                             if wrote {
@@ -389,15 +372,15 @@ where
                     // We have nothing more to write, so we no longer need to be notified of writability
                     self.poll
                         .registry()
-                        .reregister(socket, token, Interest::READABLE)
-                        .context("Failed to reregister socket")?;
+                        .reregister(socket, token, Interest::READABLE)?;
                 } else if writing_info.is_some() && !was_waiting_for_write {
                     // We still have something to write but we reached a would block state,
                     // so we need to be notified of writability.
-                    self.poll
-                        .registry()
-                        .reregister(socket, token, Interest::READABLE.add(Interest::WRITABLE))
-                        .context("Failed to reregister socket")?;
+                    self.poll.registry().reregister(
+                        socket,
+                        token,
+                        Interest::READABLE.add(Interest::WRITABLE),
+                    )?;
                 } else {
                     // We have nothing to write and we were not waiting for writability, so we
                     // Don't need to re register
@@ -415,7 +398,7 @@ where
     fn read_until_block(
         &mut self,
         token: Token,
-    ) -> atlas_common::error::Result<ConnectionWorkResult> {
+    ) -> Result<ConnectionWorkResult, ReadError<CN::Error>> {
         let connection = if self.connections.contains(token.into()) {
             &mut self.connections[token.into()]
         } else {
@@ -425,7 +408,7 @@ where
                 token
             );
 
-            return Err(anyhow!("Received read event for non-existent connection"));
+            return Err(ReadError::ReceivedReadEventForNonExistentConnection);
         };
 
         match connection {
@@ -449,7 +432,8 @@ where
                         for message in received {
                             connection
                                 .byte_input_stub()
-                                .handle_message(self.global_conns.network_info(), message)?;
+                                .handle_message(self.global_conns.network_info(), message)
+                                .map_err(ReadError::HandleMessageError)?;
                         }
                     }
                 }
@@ -463,7 +447,7 @@ where
 
     /// Receive connections from the connection register and register them with the epoll instance
     //#[instrument(level = Level::TRACE)]
-    fn register_connections(&mut self) -> atlas_common::error::Result<()> {
+    fn register_connections(&mut self) -> Result<(), RegisterConnectionError<CN::Error>> {
         while let Ok(message) = self.conn_register.try_recv() {
             match message {
                 EpollWorkerMessage::NewConnection(conn) => {
@@ -484,7 +468,10 @@ where
     }
 
     //#[instrument(level = Level::TRACE)]
-    fn create_connection(&mut self, conn: NewConnection<CN>) -> atlas_common::error::Result<()> {
+    fn create_connection(
+        &mut self,
+        conn: NewConnection<CN>,
+    ) -> Result<(), CreateConnectionError<CN::Error>> {
         let NewConnection {
             conn_id,
             peer_id,
@@ -543,7 +530,7 @@ where
         &mut self,
         token: Token,
         is_failure: bool,
-    ) -> atlas_common::error::Result<()> {
+    ) -> Result<(), DeleteConnectionError> {
         if let Some(conn) = self.connections.try_remove(token.into()) {
             match conn {
                 SocketConnection::PeerConn {
@@ -609,3 +596,80 @@ where
             .finish_non_exhaustive()
     }
 }
+
+#[derive(Error, Debug)]
+pub(crate) enum WorkerLoopError<NIE>
+where
+    NIE: Error,
+{
+    #[error("Failed to read event loop due to IO Error: {0}")]
+    IoError(#[from] io::Error),
+    #[error("Failed to register pending connections due to error: {0}")]
+    RegisteredConnectionsError(#[from] RegisterConnectionError<NIE>),
+}
+
+#[derive(Error, Debug)]
+enum RegisterConnectionError<NIE>
+where
+    NIE: Error,
+{
+    #[error("Failed to create connection due to: {0}")]
+    CreateConnectionError(#[from] CreateConnectionError<NIE>),
+    #[error("Failed to delete connection due to: {0}")]
+    FailedToDeleteConnectionError(#[from] DeleteConnectionError),
+}
+
+#[derive(Error, Debug)]
+enum CreateConnectionError<CNE>
+where
+    CNE: Error,
+{
+    #[error("Failed to create connection due to error while reading: {0}")]
+    ReadError(#[from] ReadError<CNE>),
+    #[error("Failed to create connection due to error while writing: {0}")]
+    WriteError(#[from] WriteError),
+    #[error("Failed to register connection due to IO Error: {0}")]
+    IoError(#[from] io::Error),
+}
+
+#[derive(Error, Debug)]
+enum HandleConnEventError<CNE>
+where
+    CNE: Error,
+{
+    #[error("Received event for non-existent connection")]
+    ReceivedEventForNonExistentConnection(Token),
+    #[error("Failed to create connection due to error while reading: {0}")]
+    ReadError(#[from] ReadError<CNE>),
+    #[error("Failed to create connection due to error while writing: {0}")]
+    WriteError(#[from] WriteError),
+}
+
+#[derive(Error, Debug)]
+enum ReadError<CNE>
+where
+    CNE: Error,
+{
+    #[error("Received read event for non-existent connection")]
+    ReceivedReadEventForNonExistentConnection,
+    #[error("Failed to handle message due to internal error {0}")]
+    HandleMessageError(CNE),
+    #[error("Failed to read message from network layer due to {0}")]
+    ReadMessageError(#[from] ReadMessageError),
+}
+
+#[derive(Error, Debug)]
+enum WriteError {
+    #[error("Received write event for non-existent connection {0}")]
+    FailedToReRegisterSocket(#[from] io::Error),
+    #[error("Received write event for non-existent connection for token {0:?}")]
+    ReceivedReadEventForNonExistentConnection(Token),
+    #[error("Failed to get message {0}")]
+    FailedToTake(#[from] MioError),
+    #[error("Failed to initialize writing buffer")]
+    FailedToInitWritingBuffer(#[from] WritingBufferError),
+}
+
+#[derive(Error, Debug)]
+#[error("Failed to shutdown socket {0:?}")]
+struct DeleteConnectionError(#[from] io::Error);

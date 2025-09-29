@@ -6,7 +6,7 @@ use atlas_common::node_id::{NodeId, NodeType};
 use atlas_common::socket::MioSocket;
 use atlas_common::{channel, Err};
 use atlas_communication::lookup_table::MessageModule;
-use atlas_communication::message::{Header, NetworkSerializedMessage, WireMessage};
+use atlas_communication::message::{Header, MessageErrors, NetworkSerializedMessage, WireMessage};
 
 use bytes::{Buf, Bytes, BytesMut};
 use getset::Getters;
@@ -14,6 +14,8 @@ use std::io;
 use std::io::{Read, Write};
 use std::mem::size_of;
 use std::time::Instant;
+use bincode::error::EncodeError;
+use thiserror::Error;
 use tracing::{trace, warn};
 
 pub type Callback = Option<Box<dyn FnOnce(bool) + Send>>;
@@ -96,7 +98,7 @@ fn attempt_to_write_bytes_until_block(
     socket: &mut MioSocket,
     written_bytes: &mut usize,
     buffer: &Bytes,
-) -> atlas_common::error::Result<InternalWorkResult> {
+) -> Result<InternalWorkResult, io::Error> {
     match socket.write(&buffer[*written_bytes..]) {
         Ok(0) => Ok(InternalWorkResult::ConnectionBroken(
             *written_bytes,
@@ -122,7 +124,7 @@ fn attempt_to_write_bytes_until_block(
         }
         Err(err) if interrupted(&err) => Ok(InternalWorkResult::Interrupted),
         Err(err) => {
-            Err!(err)
+            Err(err)
         }
     }
 }
@@ -130,7 +132,7 @@ fn attempt_to_write_bytes_until_block(
 pub(crate) fn try_write_until_block(
     socket: &mut MioSocket,
     writing_buffer: &mut WritingBuffer,
-) -> atlas_common::error::Result<ConnectionWriteWork> {
+) -> Result<ConnectionWriteWork, io::Error> {
     loop {
         if let Some(header) = writing_buffer.current_header.as_ref() {
             match attempt_to_write_bytes_until_block(
@@ -200,7 +202,7 @@ fn attempt_to_read_bytes_until_block(
     read_bytes: &mut usize,
     bytes_to_read: usize,
     buffer: &mut BytesMut,
-) -> atlas_common::error::Result<InternalWorkResult> {
+) -> Result<InternalWorkResult, io::Error> {
     let read = if bytes_to_read > 0 {
         match socket.read(&mut buffer[*read_bytes..]) {
             Ok(0) => {
@@ -239,7 +241,7 @@ impl ReadingBuffer {
 pub(crate) fn read_until_block(
     socket: &mut MioSocket,
     read_info: &mut ReadingBuffer,
-) -> atlas_common::error::Result<ConnectionReadWork> {
+) -> Result<ConnectionReadWork, ReadMessageError> {
     let mut read_messages = Vec::new();
 
     loop {
@@ -277,7 +279,7 @@ pub(crate) fn read_until_block(
                         Err(err) if would_block(&err) => break,
                         Err(err) if interrupted(&err) => continue,
                         Err(err) => {
-                            return Err!(err);
+                            return Err(err.into());
                         }
                     }
                 } else {
@@ -333,7 +335,7 @@ pub(crate) fn read_until_block(
                         Err(err) if would_block(&err) => break,
                         Err(err) if interrupted(&err) => continue,
                         Err(err) => {
-                            return Err!(err);
+                            return Err(err.into());
                         }
                     }
                 } else {
@@ -341,8 +343,6 @@ pub(crate) fn read_until_block(
                     // If not, keep parsing the messages that are in the read buffer
                     0
                 };
-
-                //trace!("Read {} bytes from socket", read);
 
                 if read >= bytes_to_read {
                     //FIXME: FIX THIS RIGHT NOW
@@ -378,7 +378,6 @@ pub(crate) fn read_until_block(
             let bytes_to_read = Header::LENGTH - currently_read_bytes;
 
             let read = if bytes_to_read > 0 {
-                //trace!("Reading message header with {} left to read", bytes_to_read);
 
                 match socket.read(&mut read_info.reading_buffer[currently_read_bytes..]) {
                     Ok(0) => {
@@ -396,7 +395,7 @@ pub(crate) fn read_until_block(
                     Err(err) if would_block(&err) => break,
                     Err(err) if interrupted(&err) => continue,
                     Err(err) => {
-                        return Err!(err);
+                        return Err(err.into());
                     }
                 }
             } else {
@@ -404,8 +403,6 @@ pub(crate) fn read_until_block(
                 // If not, keep parsing the messages that are in the read buffer
                 0
             };
-
-            trace!("Read {} bytes from socket", read);
 
             if read >= bytes_to_read {
                 let header = Header::deserialize_from(&read_info.reading_buffer[..Header::LENGTH])?;
@@ -475,7 +472,7 @@ impl ReadingBuffer {
 }
 
 impl WritingBuffer {
-    pub fn init_from_message(message: WireMessage) -> atlas_common::error::Result<Self> {
+    pub fn init_from_message(message: WireMessage) -> Result<Self, WritingBufferError> {
         let (header, module, payload) = message.into_inner();
 
         let mut header_bytes = BytesMut::with_capacity(Header::LENGTH);
@@ -506,4 +503,20 @@ pub fn initialize_send_channel(
         2048,
         Some(format!("Network Peer Send Message {:?}", peer).as_str()),
     )
+}
+
+#[derive(Error, Debug)]
+pub enum ReadMessageError {
+    #[error("Failed to read message due to IO Error {0}")]
+    IoError(#[from] io::Error),
+    #[error("Message creation error {0}")]
+    MessageErrors(#[from] MessageErrors)
+}
+
+#[derive(Error, Debug)]
+pub enum WritingBufferError {
+    #[error("Failed to encode error due to {0:?}")]
+    HeaderEncodeError(#[from] MessageErrors),
+    #[error("Failed to encode message due to {0:?}")]
+    MessageEncodeError(#[from] EncodeError),
 }

@@ -1,5 +1,6 @@
 mod epoll_worker;
 
+use std::io;
 use crate::conn_util::{ReadingBuffer, WritingBuffer};
 use crate::connections::{ByteMessageSendStub, Connections, PeerConn};
 use crate::epoll::epoll_worker::EpollWorker;
@@ -15,6 +16,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
 use tracing::error;
+use atlas_common::channel::SendError;
 
 pub type EpollWorkerId = u32;
 
@@ -55,11 +57,11 @@ pub(crate) fn init_worker_group_handle<CN>(
 pub(crate) fn initialize_worker_group<NI, CN, CNP>(
     connections: Arc<Connections<NI, CN, CNP>>,
     receivers: Vec<ChannelSyncRx<EpollWorkerMessage<CN>>>,
-) -> atlas_common::error::Result<()>
+) -> Result<(), io::Error>
 where
     NI: NetworkInformationProvider + 'static,
     CN: NodeIncomingStub + 'static,
-    CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
+    CNP: NodeStubController<ByteMessageSendStub, CN> + 'static
 {
     for (worker_id, rx) in receivers.into_iter().enumerate() {
         let worker = EpollWorker::new(worker_id as u32, connections.clone(), rx)?;
@@ -100,7 +102,7 @@ impl<CN> EpollWorkerGroupHandle<CN> {
     pub(super) fn assign_socket_to_worker(
         &self,
         conn_details: NewConnection<CN>,
-    ) -> atlas_common::error::Result<()> {
+    ) -> Result<(), WorkerError> {
         let round_robin = self.round_robin.fetch_add(1, Ordering::Relaxed);
 
         let epoll_worker = round_robin % self.workers.len();
@@ -113,9 +115,10 @@ impl<CN> EpollWorkerGroupHandle<CN> {
             ),
         )?;
 
-        worker
-            .send(EpollWorkerMessage::NewConnection(conn_details))
-            .context("Failed to send new connection message to epoll worker")?;
+        let conn_id = conn_details.conn_id;
+
+        worker.send(EpollWorkerMessage::NewConnection(conn_details))
+            .map_err(|err| WorkerError::SendInitMessageFailed(err, epoll_worker, conn_id))?;
 
         Ok(())
     }
@@ -125,17 +128,14 @@ impl<CN> EpollWorkerGroupHandle<CN> {
         &self,
         epoll_worker: EpollWorkerId,
         conn_id: Token,
-    ) -> atlas_common::error::Result<()> {
+    ) -> Result<(), WorkerError> {
         let worker = self.workers.get(epoll_worker as usize).ok_or(
             WorkerError::FailedToGetWorkerForConnection(epoll_worker, conn_id),
         )?;
 
         worker
             .send(EpollWorkerMessage::CloseConnection(conn_id))
-            .context(format!(
-                "Failed to close connection in worker {:?}, {:?}",
-                epoll_worker, conn_id
-            ))?;
+            .map_err(|err| WorkerError::SendCloseMessageFailed(err, epoll_worker, conn_id))?;
 
         Ok(())
     }
@@ -178,4 +178,8 @@ pub enum WorkerError {
     FailedToAllocateWorkerForConnection(usize, NodeId, u32),
     #[error("Failed to get the corresponding worker for connection {0:?}, {1:?}")]
     FailedToGetWorkerForConnection(EpollWorkerId, Token),
+    #[error("Failed to dispatch message to the channel. {0} for epoll worker {1} and token {2:?}")]
+    SendCloseMessageFailed(SendError, EpollWorkerId, Token),
+    #[error("Failed to dispatch init conn message to the channel. {0} for epoll worker {1} and conn id {2}")]
+    SendInitMessageFailed(SendError, usize, u32)
 }

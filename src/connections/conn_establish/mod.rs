@@ -1,30 +1,29 @@
 #![allow(clippy::large_enum_variant)]
 
-use anyhow::{anyhow, Context};
+use bincode::error::DecodeError;
+use bytes::{Bytes, BytesMut};
+use mio::event::Event;
+use mio::{Events, Interest, Poll, Token, Waker};
+use slab::Slab;
 use std::collections::BTreeMap;
+use std::error::Error;
 use std::fmt::{Debug, Formatter};
 use std::io;
 use std::io::Write;
 use std::net::Shutdown;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-
-use bytes::{Bytes, BytesMut};
-use mio::event::Event;
-use mio::{Events, Interest, Poll, Token, Waker};
-use slab::Slab;
 use thiserror::Error;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::conn_util;
 use crate::conn_util::{
     interrupted, would_block, ConnCounts, ConnMessage, ConnectionReadWork, ConnectionWriteWork,
-    ReadingBuffer, WritingBuffer,
+    ReadMessageError, ReadingBuffer, WritingBuffer,
 };
-use crate::connections::{ByteMessageSendStub, Connections};
+use crate::connections::{ByteMessageSendStub, Connections, HandleConnectionError};
 use atlas_common::channel::oneshot::OneShotRx;
 use atlas_common::channel::sync::{ChannelSyncRx, ChannelSyncTx};
-use atlas_common::error::*;
 use atlas_common::node_id::{NodeId, NodeType};
 use atlas_common::peer_addr::PeerAddr;
 use atlas_common::socket::{MioListener, MioSocket, SecureSocket, SecureSocketSync, SyncListener};
@@ -99,7 +98,7 @@ where
         conn_handler: Arc<ConnectionHandler>,
         network_info: Arc<NI>,
         peer_conns: Arc<Connections<NI, CN, CNP>>,
-    ) -> Result<Self> {
+    ) -> Result<Self, io::Error> {
         let mut slab = Slab::with_capacity(DEFAULT_ALLOWED_CONCURRENT_JOINS);
 
         let poll = Poll::new()?;
@@ -144,7 +143,7 @@ where
     }
 
     /// Run the event loop of this worker
-    fn event_loop(&mut self) -> Result<()> {
+    fn event_loop(&mut self) -> Result<(), EventLoopError<CNP::Error, CN::Error>> {
         let mut events = Events::with_capacity(DEFAULT_ALLOWED_CONCURRENT_JOINS);
 
         loop {
@@ -154,20 +153,16 @@ where
             for event in events.iter() {
                 match event.token() {
                     token if token == self.server_token => {
-                        self.accept_connections()
-                            .context("Error while accepting connections")?;
+                        self.accept_connections()?;
                     }
                     token if token == self.waker_token => {
                         self.handle_write_request()
-                            .context("Error while handling write requests")?;
+                            .map_err(EventLoopError::WriteRequestError)?;
                     }
                     token => {
-                        let result = self
-                            .handle_connection_ev(token, event)
-                            .context("Error while handling connection event")?;
+                        let result = self.handle_connection_ev(token, event)?;
 
-                        self.handle_connection_result(token, result)
-                            .context("Error while handling connection results")?;
+                        self.handle_connection_result(token, result)?;
                     }
                 }
             }
@@ -175,18 +170,20 @@ where
     }
 
     /// Accept connections from the server listener
-    fn accept_connections(&mut self) -> Result<()> {
+    fn accept_connections(&mut self) -> Result<(), AcceptConnError<CNP::Error, CN::Error>> {
         loop {
             match self.listener.accept() {
                 Ok((socket, addr)) => {
                     debug!("{:?} // Received connection from {}", self.my_id, addr);
 
-                    if self.currently_accepting.len() == DEFAULT_ALLOWED_CONCURRENT_JOINS {
+                    if self.currently_accepting.len() >= DEFAULT_ALLOWED_CONCURRENT_JOINS {
                         // Ignore connections that would exceed our default concurrent join limit
                         warn!(" {:?} // Ignoring connection from {} since we have reached the concurrent join limit",
                             self.my_id, addr);
 
-                        socket.shutdown(Shutdown::Both)?;
+                        socket
+                            .shutdown(Shutdown::Both)
+                            .map_err(AcceptConnError::FailedToShutdownSocket)?;
 
                         continue;
                     }
@@ -208,22 +205,19 @@ where
                             self.poll
                                 .registry()
                                 .register(socket, token, Interest::READABLE)
-                                .context("Failed to register pending conn socket")?;
+                                .map_err(AcceptConnError::FailedToRegisterSocket)?;
                         }
                         _ => unreachable!(),
                     }
 
-                    let result = self
-                        .handle_connection_readable(token)
-                        .context("Error while handling readable connection")?;
+                    let result = self.handle_connection_readable(token)?;
 
                     debug!(
                         "{:?} // Connection from {} is {:?} (Token {:?})",
                         self.my_id, addr, result, token
                     );
 
-                    self.handle_connection_result(token, result)
-                        .context("Error while handling connection result")?;
+                    self.handle_connection_result(token, result)?;
                 }
                 Err(err) if would_block(&err) => {
                     // No more connections are ready to be accepted
@@ -231,7 +225,7 @@ where
                 }
                 Err(ref err) if interrupted(err) => continue,
                 Err(err) => {
-                    return Err!(err);
+                    return Err(err.into());
                 }
             }
         }
@@ -266,7 +260,11 @@ where
     }
 
     /// Handle the result of a pending connection having been reached.
-    fn handle_connection_result(&mut self, token: Token, result: ConnectionResult) -> Result<()> {
+    fn handle_connection_result(
+        &mut self,
+        token: Token,
+        result: ConnectionResult,
+    ) -> Result<(), HandleConnResultError<CNP::Error, CN::Error>> {
         match result {
             ConnectionResult::Connected(node_id, mut pending_messages) => {
                 let node = if let Some(first_msg) = pending_messages.pop() {
@@ -284,10 +282,7 @@ where
                         self.my_id, node_id
                     );
 
-                    return Err(anyhow!(
-                        "Received connection from {:?} but no node info was received",
-                        node_id
-                    ));
+                    return Err(HandleConnResultError::NoNodeInfoReceived(node_id));
                 };
 
                 debug!(
@@ -327,7 +322,8 @@ where
                             for message in pending_messages {
                                 if message.header().payload_length() > 0 {
                                     conn.byte_input_stub
-                                        .handle_message(&self.network_info, message)?;
+                                        .handle_message(&self.network_info, message)
+                                        .map_err(HandleConnResultError::HandleMessageError)?;
                                 }
                             }
                         }
@@ -362,7 +358,11 @@ where
     }
 
     /// Handle connection events, received from epoll
-    fn handle_connection_ev(&mut self, token: Token, ev: &Event) -> Result<ConnectionResult> {
+    fn handle_connection_ev(
+        &mut self,
+        token: Token,
+        ev: &Event,
+    ) -> Result<ConnectionResult, HandleConnEvError<CN::Error>> {
         if ev.is_readable() {
             let connection_result = self.handle_connection_readable(token)?;
 
@@ -486,13 +486,11 @@ where
         Ok(ConnectionResult::Working)
     }
 
-    fn handle_connection_readable(&mut self, token: Token) -> Result<ConnectionResult> {
+    fn handle_connection_readable(
+        &mut self,
+        token: Token,
+    ) -> Result<ConnectionResult, HandleConnReadableError<CN::Error>> {
         let connection = &mut self.currently_accepting[token.into()];
-        /*trace!(
-            "{:?} // Handling read event for connection {:?}",
-            self.my_id,
-            token
-        );*/
 
         let result = match connection {
             PendingConnection::PendingConn {
@@ -554,7 +552,8 @@ where
                         for message in received {
                             self.peer_conns
                                 .loopback()
-                                .handle_message(&self.network_info, message)?;
+                                .handle_message(&self.network_info, message)
+                                .map_err(HandleConnReadableError::LoopbackError)?;
                         }
 
                         ConnectionResult::Working
@@ -630,7 +629,10 @@ impl ConnectionHandler {
         connections: Arc<Connections<NI, CN, CNP>>,
         peer_id: NodeId,
         addr: PeerAddr,
-    ) -> std::result::Result<OneShotRx<Result<()>>, ConnectionEstablishError>
+    ) -> Result<
+        OneShotRx<Result<(), ConnectionEstablishError<CNP::Error>>>,
+        ConnectionEstablishError<CNP::Error>,
+    >
     where
         NI: NetworkInformationProvider + 'static,
         CN: NodeIncomingStub + 'static,
@@ -748,15 +750,19 @@ impl ConnectionHandler {
                                                                                 ReadingBuffer::init_with_size(Header::LENGTH),
                                                                                 None);
 
-                            if err.is_err() {
-                                let _ = tx.send(err);
+                            match err {
+                                Ok(_) => {
 
-                                return;
+                                    conn_handler.done_connecting_to_node(&peer_id);
+
+                                    let _ = tx.send(Ok(()));
+                                }
+                                Err(err) => {
+                                    let _ = tx.send(Err(err.into()));
+
+                                    return;
+                                }
                             }
-
-                            conn_handler.done_connecting_to_node(&peer_id);
-
-                            let _ = tx.send(Ok(()));
 
                             return;
                         }
@@ -776,7 +782,7 @@ impl ConnectionHandler {
                 //if we fail to connect, then just ignore
                 error!("{:?} // Failed to connect to the node {:?} ", conn_handler.my_id(), peer_id);
 
-                let _ = tx.send(Err!(ConnectionEstablishError::FailedToConnectToNode(peer_id)));
+                let _ = tx.send(Err(ConnectionEstablishError::FailedToConnectToNode(peer_id)));
             }).expect("Failed to allocate thread to establish connection");
 
         Ok(rx)
@@ -879,9 +885,90 @@ impl Debug for PendingConnection {
 }
 
 #[derive(Error, Debug)]
-pub enum ConnectionEstablishError {
+pub enum EventLoopError<CNPE, CNE>
+where
+    CNPE: Error,
+    CNE: Error,
+{
+    #[error("IO Error while polling events: {0}")]
+    IoError(#[from] io::Error),
+    #[error("Error while handling connection event: {0}")]
+    AcceptConnError(#[from] AcceptConnError<CNPE, CNE>),
+    #[error("Error while handling write request: {0}")]
+    WriteRequestError(io::Error),
+    #[error("Error while accept connection: {0}")]
+    AcceptConnectionError(#[from] HandleConnEvError<CNE>),
+    #[error("Error while handling connection result: {0}")]
+    HandleConnectionResultError(#[from] HandleConnResultError<CNPE, CNE>),
+}
+
+#[derive(Error, Debug)]
+pub enum HandleConnResultError<CNPE, CNE>
+where
+    CNPE: Error,
+    CNE: Error,
+{
+    #[error("Failed to decode node info from incoming connection: {0}")]
+    DecodeError(#[from] DecodeError),
+    #[error("Received connection from node {0:?} but no node info was received")]
+    NoNodeInfoReceived(NodeId),
+    #[error("IO Error while deregistering socket: {0}")]
+    IoError(#[from] io::Error),
+    #[error("Failed to handle connection established: {0}")]
+    HandleConnEstablished(#[from] HandleConnectionError<CNPE>),
+    #[error("Failed to push message into byte input stub: {0}")]
+    HandleMessageError(CNE),
+}
+
+#[derive(Error, Debug)]
+pub enum AcceptConnError<CNPE, CNE>
+where
+    CNPE: Error,
+    CNE: Error,
+{
+    #[error("Failed to accept connection due to IO Error: {0}")]
+    IoError(#[from] io::Error),
+    #[error("Failed to shutdown socket after rejecting connection: {0}")]
+    FailedToShutdownSocket(io::Error),
+    #[error("Failed to register socket after accepting connection: {0}")]
+    FailedToRegisterSocket(io::Error),
+    #[error("Failed to handle connection readable event {0}")]
+    FailedHandleConnReadable(#[from] HandleConnReadableError<CNE>),
+    #[error("Failed to handle connection result: {0}")]
+    FailedHandleConnResult(#[from] HandleConnResultError<CNPE, CNE>),
+}
+
+#[derive(Error, Debug)]
+pub enum HandleConnReadableError<E>
+where
+    E: std::error::Error,
+{
+    #[error("Error while reading from socket: {0}")]
+    ReadMessage(#[from] ReadMessageError),
+    #[error("Error while delivering loopback message: {0}")]
+    LoopbackError(E),
+}
+
+#[derive(Error, Debug)]
+pub enum HandleConnEvError<E>
+where
+    E: Error,
+{
+    #[error("Error while handling readable event: {0}")]
+    ReadErr(#[from] HandleConnReadableError<E>),
+    #[error("Error while writing to socket: {0}")]
+    WriteErr(#[from] io::Error),
+}
+
+#[derive(Error, Debug)]
+pub enum ConnectionEstablishError<CNPE>
+where
+    CNPE: Error,
+{
     #[error("Failed to connect to node {0:?} as we are already connecting to that node")]
     AlreadyConnectingToNode(NodeId),
     #[error("Failed to connect to node {0:?}")]
     FailedToConnectToNode(NodeId),
+    #[error("Handle connection error: {0:?}")]
+    HandleConnectionError(#[from] HandleConnectionError<CNPE>),
 }
