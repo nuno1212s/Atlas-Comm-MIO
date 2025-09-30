@@ -7,7 +7,6 @@ use crate::conn_util::{
 };
 use crate::connections::{ByteMessageSendStub, ConnHandle, Connections, MioError, PeerConn};
 use crate::epoll::{EpollWorkerId, EpollWorkerMessage, NewConnection};
-use anyhow::{anyhow, Context};
 use atlas_common::channel::sync::ChannelSyncRx;
 use atlas_common::node_id::NodeId;
 use atlas_common::socket::MioSocket;
@@ -97,9 +96,7 @@ where
         let entry = conn_slab.vacant_entry();
 
         let waker_token = Token(entry.key());
-        let waker = Arc::new(
-            Waker::new(poll.registry(), waker_token)?,
-        );
+        let waker = Arc::new(Waker::new(poll.registry(), waker_token)?);
 
         entry.insert(SocketConnection::Waker);
 
@@ -609,7 +606,7 @@ where
 }
 
 #[derive(Error, Debug)]
-enum RegisterConnectionError<NIE>
+pub(crate) enum RegisterConnectionError<NIE>
 where
     NIE: Error,
 {
@@ -620,7 +617,7 @@ where
 }
 
 #[derive(Error, Debug)]
-enum CreateConnectionError<CNE>
+pub(crate) enum CreateConnectionError<CNE>
 where
     CNE: Error,
 {
@@ -633,7 +630,7 @@ where
 }
 
 #[derive(Error, Debug)]
-enum HandleConnEventError<CNE>
+pub(crate) enum HandleConnEventError<CNE>
 where
     CNE: Error,
 {
@@ -646,7 +643,7 @@ where
 }
 
 #[derive(Error, Debug)]
-enum ReadError<CNE>
+pub(crate) enum ReadError<CNE>
 where
     CNE: Error,
 {
@@ -659,7 +656,7 @@ where
 }
 
 #[derive(Error, Debug)]
-enum WriteError {
+pub(crate) enum WriteError {
     #[error("Received write event for non-existent connection {0}")]
     FailedToReRegisterSocket(#[from] io::Error),
     #[error("Received write event for non-existent connection for token {0:?}")]
@@ -672,4 +669,4 @@ enum WriteError {
 
 #[derive(Error, Debug)]
 #[error("Failed to shutdown socket {0:?}")]
-struct DeleteConnectionError(#[from] io::Error);
+pub(crate) struct DeleteConnectionError(#[from] io::Error);

@@ -1,22 +1,21 @@
 mod epoll_worker;
 
-use std::io;
 use crate::conn_util::{ReadingBuffer, WritingBuffer};
 use crate::connections::{ByteMessageSendStub, Connections, PeerConn};
 use crate::epoll::epoll_worker::EpollWorker;
-use anyhow::Context;
 use atlas_common::channel;
 use atlas_common::channel::sync::{ChannelSyncRx, ChannelSyncTx};
+use atlas_common::channel::SendError;
 use atlas_common::node_id::NodeId;
 use atlas_common::socket::MioSocket;
 use atlas_communication::byte_stub::{NodeIncomingStub, NodeStubController};
 use atlas_communication::reconfiguration::NetworkInformationProvider;
 use mio::Token;
+use std::io;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
 use tracing::error;
-use atlas_common::channel::SendError;
 
 pub type EpollWorkerId = u32;
 
@@ -61,7 +60,7 @@ pub(crate) fn initialize_worker_group<NI, CN, CNP>(
 where
     NI: NetworkInformationProvider + 'static,
     CN: NodeIncomingStub + 'static,
-    CNP: NodeStubController<ByteMessageSendStub, CN> + 'static
+    CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
 {
     for (worker_id, rx) in receivers.into_iter().enumerate() {
         let worker = EpollWorker::new(worker_id as u32, connections.clone(), rx)?;
@@ -117,7 +116,8 @@ impl<CN> EpollWorkerGroupHandle<CN> {
 
         let conn_id = conn_details.conn_id;
 
-        worker.send(EpollWorkerMessage::NewConnection(conn_details))
+        worker
+            .send(EpollWorkerMessage::NewConnection(conn_details))
             .map_err(|err| WorkerError::SendInitMessageFailed(err, epoll_worker, conn_id))?;
 
         Ok(())
@@ -181,5 +181,5 @@ pub enum WorkerError {
     #[error("Failed to dispatch message to the channel. {0} for epoll worker {1} and token {2:?}")]
     SendCloseMessageFailed(SendError, EpollWorkerId, Token),
     #[error("Failed to dispatch init conn message to the channel. {0} for epoll worker {1} and conn id {2}")]
-    SendInitMessageFailed(SendError, usize, u32)
+    SendInitMessageFailed(SendError, usize, u32),
 }
