@@ -58,6 +58,6 @@ jobs:
           toolchain: nightly-2025-06-09
       - uses: taiki-e/install-action@nextest
       - run: cargo build --tests
-        working-directory: Atlas-Comm-Mio
+        working-directory: Atlas-Comm-MIO
       - run: cargo nextest run
-        working-directory: Atlas-Comm-Mio
+        working-directory: Atlas-Comm-MIO
