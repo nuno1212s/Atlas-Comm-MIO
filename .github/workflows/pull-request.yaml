@@ -24,7 +24,7 @@ jobs:
           toolchain: nightly-2025-06-09
           components: rustfmt, clippy
       - name: Check versions
-        working-directory: Atlas-Comm-Mio
+        working-directory: Atlas-Comm-MIO
         run: |
           rustup --version
           rustup show
@@ -32,10 +32,10 @@ jobs:
           cargo fmt --version
           cargo clippy --version
       - name: Lint formatting
-        working-directory: Atlas-Comm-Mio
+        working-directory: Atlas-Comm-MIO
         run: cargo fmt --all -- --check
       - name: Lint code
-        working-directory: Atlas-Comm-Mio
+        working-directory: Atlas-Comm-MIO
         run: cargo clippy --all-targets --no-deps -- -D warnings
 
   unit-tests:
@@ -49,7 +49,7 @@ jobs:
     steps:
       - uses: actions/checkout@v3
         with:
-          path: Atlas-Comm-Mio
+          path: Atlas-Comm-MIO
       - uses: ./Atlas-Comm-MIO/.github/actions/checkout-dependencies
       - uses: Swatinem/rust-cache@v2
       - uses: actions-rs/toolchain@v1
