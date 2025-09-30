@@ -624,17 +624,15 @@ impl ConnectionHandler {
         }
     }
 
-    pub type InternalConnectResult<CNPE: Error> = OneShotRx<Result<(), ConnectionEstablishError<CNPE>>>;
+    pub type InternalConnectResult<CNPE: Error> =
+        OneShotRx<Result<(), ConnectionEstablishError<CNPE>>>;
 
     pub fn connect_to_node<NI, CN, CNP>(
         self: &Arc<Self>,
         connections: Arc<Connections<NI, CN, CNP>>,
         peer_id: NodeId,
         addr: PeerAddr,
-    ) -> Result<
-        Self::InternalConnectResult<CNP::Error>,
-        ConnectionEstablishError<CNP::Error>,
-    >
+    ) -> Result<Self::InternalConnectResult<CNP::Error>, ConnectionEstablishError<CNP::Error>>
     where
         NI: NetworkInformationProvider + 'static,
         CN: NodeIncomingStub + 'static,

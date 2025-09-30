@@ -138,7 +138,7 @@ where
             .map(|entry| *entry.key())
             .collect()
     }
-    
+
     type InternalConnectResult = OneShotRx<Result<(), ConnectionEstablishError<CNP::Error>>>;
 
     /// Attempt to connect to a given node
@@ -146,10 +146,7 @@ where
     fn internal_connect_to_node(
         self: &Arc<Self>,
         node: NodeId,
-    ) -> Result<
-        Vec<Self::InternalConnectResult>,
-        ConnectionError<CNP::Error>,
-    > {
+    ) -> Result<Vec<Self::InternalConnectResult>, ConnectionError<CNP::Error>> {
         if node == self.own_id {
             return Err!(ConnectionError::ConnectToSelf);
         }
