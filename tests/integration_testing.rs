@@ -53,7 +53,11 @@ struct MockError;
 impl NodeIncomingStub for MockStubInput {
     type Error = MockError;
 
-    fn handle_message<NI>(&self, _network_info: &Arc<NI>, message: WireMessage) -> Result<(), MockError>
+    fn handle_message<NI>(
+        &self,
+        _network_info: &Arc<NI>,
+        message: WireMessage,
+    ) -> Result<(), MockError>
     where
         NI: NetworkInformationProvider + 'static,
     {
@@ -98,7 +102,11 @@ impl NodeStubController<ByteStubType, MockStubInput> for MockStubController {
         self.stubs.lock().unwrap().contains_key(node)
     }
 
-    fn generate_stub_for(&self, node: NodeId, byte_stub: ByteStubType) -> Result<MockStubInput, MockError> {
+    fn generate_stub_for(
+        &self,
+        node: NodeId,
+        byte_stub: ByteStubType,
+    ) -> Result<MockStubInput, MockError> {
         let input_stub = self.create_stub_for(node);
 
         let output_stub = MockStubOutput(byte_stub);
@@ -133,7 +141,9 @@ impl NodeStubController<ByteStubType, MockStubInput> for MockStubController {
 }
 
 #[inline]
-fn read_private_keys_from_file(mut file: BufReader<File>) -> atlas_common::error::Result<Vec<PrivateKeyDer<'static>>> {
+fn read_private_keys_from_file(
+    mut file: BufReader<File>,
+) -> atlas_common::error::Result<Vec<PrivateKeyDer<'static>>> {
     let mut certs = Vec::new();
 
     for item in iter::from_fn(|| read_one(&mut file).transpose()) {
@@ -192,7 +202,7 @@ fn default_config(node: u32) -> atlas_common::error::Result<MIOConfig> {
 
     let chain = {
         let mut file = BufReader::new(
-            File::open(format!("./tests/ca-root/srv{}/chain", node))
+            File::open(format!("./tests/ca-root/srv{node}/chain"))
                 .context("Failed to open certificate file")
                 .context(format!("Current dir: {:?}", std::env::current_dir()))?,
         );
@@ -205,7 +215,7 @@ fn default_config(node: u32) -> atlas_common::error::Result<MIOConfig> {
 
     let sk = {
         let file = BufReader::new(
-            File::open(format!("./tests/ca-root/srv{}/key", node))
+            File::open(format!("./tests/ca-root/srv{node}/key"))
                 .context("Failed to open certificate file")
                 .context(format!("Current dir: {:?}", std::env::current_dir()))?,
         );
@@ -431,8 +441,7 @@ mod conn_test {
                     .connect_to_node(other_node_id)?
                 {
                     result_wait.recv()?.context(format!(
-                        "Failed to receive result of connecting to node {:?}",
-                        other_node_id
+                        "Failed to receive result of connecting to node {other_node_id:?}"
                     ))?;
                 }
             }
@@ -450,9 +459,7 @@ mod conn_test {
                     node_ref
                         .connection_controller()
                         .has_connection(&NodeId::from(other_node)),
-                    "Node {:?} does not have connection to node {:?}",
-                    node,
-                    other_node
+                    "Node {node:?} does not have connection to node {other_node:?}"
                 );
             }
         }

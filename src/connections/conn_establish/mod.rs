@@ -157,7 +157,7 @@ where
                     }
                     token if token == self.waker_token => {
                         self.handle_write_request()
-                            .map_err(EventLoopError::WriteRequestError)?;
+                            .map_err(EventLoopError::WriteRequest)?;
                     }
                     token => {
                         let result = self.handle_connection_ev(token, event)?;
@@ -624,13 +624,15 @@ impl ConnectionHandler {
         }
     }
 
+    pub type InternalConnectResult<CNPE: Error> = OneShotRx<Result<(), ConnectionEstablishError<CNPE>>>;
+
     pub fn connect_to_node<NI, CN, CNP>(
         self: &Arc<Self>,
         connections: Arc<Connections<NI, CN, CNP>>,
         peer_id: NodeId,
         addr: PeerAddr,
     ) -> Result<
-        OneShotRx<Result<(), ConnectionEstablishError<CNP::Error>>>,
+        Self::InternalConnectResult<CNP::Error>,
         ConnectionEstablishError<CNP::Error>,
     >
     where
@@ -666,7 +668,7 @@ impl ConnectionHandler {
             .expect("Failed to get node info");
 
         std::thread::Builder::new()
-            .name(format!("Connecting to Node {:?}", peer_id))
+            .name(format!("Connecting to Node {peer_id:?}"))
             .spawn(move || {
 
                 //Get the correct IP for us to address the node
@@ -817,12 +819,12 @@ where
     let waker = server_worker.waker.clone();
 
     std::thread::Builder::new()
-        .name(format!("Server Worker {:?}", my_id))
+        .name(format!("Server Worker {my_id:?}"))
         .spawn(move || loop {
             match server_worker.event_loop() {
                 Ok(_) => {}
                 Err(error) => {
-                    error!("Error in server worker {:?} {:?}", my_id, error)
+                    error!("Error in server worker {my_id:?} {error:?}")
                 }
             }
         })
@@ -891,15 +893,15 @@ where
     CNE: Error,
 {
     #[error("IO Error while polling events: {0}")]
-    IoError(#[from] io::Error),
+    Io(#[from] io::Error),
     #[error("Error while handling connection event: {0}")]
-    AcceptConnError(#[from] AcceptConnError<CNPE, CNE>),
+    AcceptConn(#[from] AcceptConnError<CNPE, CNE>),
     #[error("Error while handling write request: {0}")]
-    WriteRequestError(io::Error),
+    WriteRequest(io::Error),
     #[error("Error while accept connection: {0}")]
-    AcceptConnectionError(#[from] HandleConnEvError<CNE>),
+    AcceptConnection(#[from] HandleConnEvError<CNE>),
     #[error("Error while handling connection result: {0}")]
-    HandleConnectionResultError(#[from] HandleConnResultError<CNPE, CNE>),
+    HandleConnectionResult(#[from] HandleConnResultError<CNPE, CNE>),
 }
 
 #[derive(Error, Debug)]

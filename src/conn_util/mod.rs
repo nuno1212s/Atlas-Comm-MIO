@@ -498,7 +498,7 @@ pub fn initialize_send_channel(
 ) -> (ChannelSyncTx<ConnMessage>, ChannelSyncRx<ConnMessage>) {
     channel::sync::new_bounded_sync(
         2048,
-        Some(format!("Network Peer Send Message {:?}", peer).as_str()),
+        Some(format!("Network Peer Send Message {peer:?}").as_str()),
     )
 }
 

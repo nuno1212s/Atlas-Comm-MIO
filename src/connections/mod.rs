@@ -138,13 +138,16 @@ where
             .map(|entry| *entry.key())
             .collect()
     }
+    
+    type InternalConnectResult = OneShotRx<Result<(), ConnectionEstablishError<CNP::Error>>>;
 
     /// Attempt to connect to a given node
+    #[allow(clippy::type_complexity)]
     fn internal_connect_to_node(
         self: &Arc<Self>,
         node: NodeId,
     ) -> Result<
-        Vec<OneShotRx<Result<(), ConnectionEstablishError<CNP::Error>>>>,
+        Vec<Self::InternalConnectResult>,
         ConnectionError<CNP::Error>,
     > {
         if node == self.own_id {
@@ -181,7 +184,7 @@ where
         let connections = if current_connections > target_connections {
             0
         } else {
-            target_connections - current_connections
+            target_connections.saturating_sub(current_connections)
         };
 
         let mut result_vec = Vec::with_capacity(connections);

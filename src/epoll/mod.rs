@@ -22,7 +22,7 @@ pub type EpollWorkerId = u32;
 pub const DEFAULT_WORK_CHANNEL: usize = 128;
 
 pub(crate) enum EpollWorkerMessage<CN> {
-    NewConnection(NewConnection<CN>),
+    NewConnection(Box<NewConnection<CN>>),
     CloseConnection(Token),
 }
 
@@ -66,10 +66,10 @@ where
         let worker = EpollWorker::new(worker_id as u32, connections.clone(), rx)?;
 
         std::thread::Builder::new()
-            .name(format!("Epoll Worker {}", worker_id))
+            .name(format!("Epoll Worker {worker_id}"))
             .spawn(move || {
                 if let Err(err) = worker.epoll_worker_loop() {
-                    error!("Epoll worker {} failed with error: {:?}", worker_id, err);
+                    error!("Epoll worker {worker_id} failed with error: {err:?}");
                 }
             })
             .expect("Failed to launch worker thread");
@@ -117,7 +117,7 @@ impl<CN> EpollWorkerGroupHandle<CN> {
         let conn_id = conn_details.conn_id;
 
         worker
-            .send(EpollWorkerMessage::NewConnection(conn_details))
+            .send(EpollWorkerMessage::NewConnection(Box::new(conn_details)))
             .map_err(|err| WorkerError::SendInitMessageFailed(err, epoll_worker, conn_id))?;
 
         Ok(())

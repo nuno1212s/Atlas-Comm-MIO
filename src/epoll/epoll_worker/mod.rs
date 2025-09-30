@@ -448,7 +448,7 @@ where
         while let Ok(message) = self.conn_register.try_recv() {
             match message {
                 EpollWorkerMessage::NewConnection(conn) => {
-                    self.create_connection(conn)?;
+                    self.create_connection(*conn)?;
                 }
                 EpollWorkerMessage::CloseConnection(token) => {
                     if let SocketConnection::Waker = &self.connections[token.into()] {
@@ -622,11 +622,11 @@ where
     CNE: Error,
 {
     #[error("Failed to create connection due to error while reading: {0}")]
-    ReadError(#[from] ReadError<CNE>),
+    Read(#[from] ReadError<CNE>),
     #[error("Failed to create connection due to error while writing: {0}")]
-    WriteError(#[from] WriteError),
+    Write(#[from] WriteError),
     #[error("Failed to register connection due to IO Error: {0}")]
-    IoError(#[from] io::Error),
+    Io(#[from] io::Error),
 }
 
 #[derive(Error, Debug)]
