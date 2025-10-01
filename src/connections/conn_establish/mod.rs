@@ -523,14 +523,14 @@ where
                             *peer_id = Some(connection_peer_id);
 
                             // Check the general connections first as we add to this before removing from the pending connections
-                            match self.peer_conns.get_connection(&connection_peer_id) {
+                            return match self.peer_conns.get_connection(&connection_peer_id) {
                                 None => {
                                     debug!("Received connection ID for token {:?}, from {:?}. No existing connection has been found, initializing.", token, connection_peer_id,);
 
-                                    return Ok(ConnectionResult::Connected(
+                                    Ok(ConnectionResult::Connected(
                                         connection_peer_id,
                                         received,
-                                    ));
+                                    ))
                                 }
                                 Some(conn) => {
                                     trace!("Received connection ID for token {:?}, from {:?}, node type is: {:?}\
@@ -541,10 +541,10 @@ where
 
                                     connection.fill_channel(channel);
 
-                                    return Ok(ConnectionResult::Connected(
+                                    Ok(ConnectionResult::Connected(
                                         connection_peer_id,
                                         received,
-                                    ));
+                                    ))
                                 }
                             }
                         }
@@ -566,6 +566,8 @@ where
         Ok(result)
     }
 }
+
+pub type InternalConnectResult<E> = OneShotRx<Result<(), ConnectionEstablishError<E>>>;
 
 impl ConnectionHandler {
     pub(super) fn initialize(my_id: NodeId, conn_count: ConnCounts) -> Self {
@@ -624,15 +626,13 @@ impl ConnectionHandler {
         }
     }
 
-    pub type InternalConnectResult<CNPE: Error> =
-        OneShotRx<Result<(), ConnectionEstablishError<CNPE>>>;
 
     pub fn connect_to_node<NI, CN, CNP>(
         self: &Arc<Self>,
         connections: Arc<Connections<NI, CN, CNP>>,
         peer_id: NodeId,
         addr: PeerAddr,
-    ) -> Result<Self::InternalConnectResult<CNP::Error>, ConnectionEstablishError<CNP::Error>>
+    ) -> Result<InternalConnectResult<CNP::Error>, ConnectionEstablishError<CNP::Error>>
     where
         NI: NetworkInformationProvider + 'static,
         CN: NodeIncomingStub + 'static,

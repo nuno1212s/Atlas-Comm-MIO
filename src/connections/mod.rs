@@ -76,6 +76,8 @@ pub struct PeerConn<IS> {
     to_send: (ChannelSyncTx<ConnMessage>, ChannelSyncRx<ConnMessage>),
 }
 
+type InternalConnectResult<E> = OneShotRx<Result<(), ConnectionEstablishError<E>>>;
+
 impl<NI, CN, CNP> Connections<NI, CN, CNP>
 where
     CNP: NodeStubController<ByteMessageSendStub, CN> + 'static,
@@ -139,14 +141,13 @@ where
             .collect()
     }
 
-    type InternalConnectResult = OneShotRx<Result<(), ConnectionEstablishError<CNP::Error>>>;
 
     /// Attempt to connect to a given node
     #[allow(clippy::type_complexity)]
     fn internal_connect_to_node(
         self: &Arc<Self>,
         node: NodeId,
-    ) -> Result<Vec<Self::InternalConnectResult>, ConnectionError<CNP::Error>> {
+    ) -> Result<Vec<InternalConnectResult<CNP::Error>>, ConnectionError<CNP::Error>> {
         if node == self.own_id {
             return Err!(ConnectionError::ConnectToSelf);
         }
