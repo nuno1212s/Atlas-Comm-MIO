@@ -1,3 +1,5 @@
+#![allow(incomplete_features)]
+#![feature(inherent_associated_types)]
 extern crate core;
 
 use std::io;

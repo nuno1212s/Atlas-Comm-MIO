@@ -24,7 +24,7 @@ use atlas_common::channel::sync::{ChannelSyncRx, ChannelSyncTx};
 use atlas_common::channel::{TryRecvError, TrySendReturnError};
 use atlas_common::node_id::{NodeId, NodeType};
 use atlas_common::socket::{MioSocket, SecureSocket, SecureSocketSync, SyncListener};
-use atlas_common::Err;
+use atlas_common::{quiet_unwrap, Err};
 use atlas_communication::byte_stub;
 use atlas_communication::byte_stub::connections::NetworkConnectionController;
 use atlas_communication::byte_stub::{DispatchError, NodeIncomingStub, NodeStubController};
@@ -139,14 +139,14 @@ where
             .collect()
     }
 
+    type InternalConnectResult = OneShotRx<Result<(), ConnectionEstablishError<CNP::Error>>>;
+
     /// Attempt to connect to a given node
+    #[allow(clippy::type_complexity)]
     fn internal_connect_to_node(
         self: &Arc<Self>,
         node: NodeId,
-    ) -> Result<
-        Vec<OneShotRx<Result<(), ConnectionEstablishError<CNP::Error>>>>,
-        ConnectionError<CNP::Error>,
-    > {
+    ) -> Result<Vec<Self::InternalConnectResult>, ConnectionError<CNP::Error>> {
         if node == self.own_id {
             return Err!(ConnectionError::ConnectToSelf);
         }
@@ -181,7 +181,7 @@ where
         let connections = if current_connections > target_connections {
             0
         } else {
-            target_connections - current_connections
+            target_connections.saturating_sub(current_connections)
         };
 
         let mut result_vec = Vec::with_capacity(connections);
@@ -413,7 +413,7 @@ where
         if connection.concurrent_connection_count() == 0 {
             self.registered_connections.remove(&node);
 
-            self.stub_controller.shutdown_stubs_for(&node);
+            quiet_unwrap!(self.stub_controller.shutdown_stubs_for(&node));
 
             if self.should_attempt_to_reconnect(&node) {
                 info!("Attempting to reconnect to node {:?}", node);

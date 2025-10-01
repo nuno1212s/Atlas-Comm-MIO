@@ -11,7 +11,6 @@ use atlas_comm_mio::ByteStubType;
 use atlas_common::channel;
 use atlas_common::channel::sync::{ChannelSyncRx, ChannelSyncTx};
 use atlas_common::crypto::signature::{KeyPair, PublicKey};
-use atlas_common::error::*;
 use atlas_common::node_id::{NodeId, NodeType};
 use atlas_common::peer_addr::PeerAddr;
 use atlas_communication::byte_stub::{NodeIncomingStub, NodeStubController};
@@ -22,6 +21,7 @@ use getset::Getters;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
 use rustls_pemfile::{read_one, Item};
+use thiserror::Error;
 use tracing::{debug, info};
 
 #[derive(Clone, Getters)]
@@ -46,14 +46,24 @@ struct MockStubOutput(ByteStubType);
 #[derive(Clone)]
 struct MockStub(MockStubInput, MockStubOutput);
 
+#[derive(Error, Debug)]
+#[error("A mock error definition")]
+struct MockError;
+
 impl NodeIncomingStub for MockStubInput {
-    fn handle_message<NI>(&self, _network_info: &Arc<NI>, message: WireMessage) -> Result<()>
+    type Error = MockError;
+
+    fn handle_message<NI>(
+        &self,
+        _network_info: &Arc<NI>,
+        message: WireMessage,
+    ) -> Result<(), MockError>
     where
         NI: NetworkInformationProvider + 'static,
     {
         debug!("{:?} // Received message: {:?}", self.0, message.header());
 
-        self.1.send(message)
+        self.1.send(message).map_err(|_| MockError)
     }
 }
 
@@ -86,11 +96,17 @@ impl MockStubController {
 }
 
 impl NodeStubController<ByteStubType, MockStubInput> for MockStubController {
+    type Error = MockError;
+
     fn has_stub_for(&self, node: &NodeId) -> bool {
         self.stubs.lock().unwrap().contains_key(node)
     }
 
-    fn generate_stub_for(&self, node: NodeId, byte_stub: ByteStubType) -> Result<MockStubInput> {
+    fn generate_stub_for(
+        &self,
+        node: NodeId,
+        byte_stub: ByteStubType,
+    ) -> Result<MockStubInput, MockError> {
         let input_stub = self.create_stub_for(node);
 
         let output_stub = MockStubOutput(byte_stub);
@@ -99,7 +115,7 @@ impl NodeStubController<ByteStubType, MockStubInput> for MockStubController {
 
         self.stubs
             .lock()
-            .map_err(|err| anyhow!(err.to_string()))?
+            .expect("Failed to lock stubs mutex")
             .insert(node, stub);
 
         Ok(input_stub)
@@ -117,13 +133,17 @@ impl NodeStubController<ByteStubType, MockStubInput> for MockStubController {
             .map(|stub| stub.0.clone())
     }
 
-    fn shutdown_stubs_for(&self, node: &NodeId) {
+    fn shutdown_stubs_for(&self, node: &NodeId) -> Result<(), MockError> {
         self.stubs.lock().unwrap().remove(node);
+
+        Ok(())
     }
 }
 
 #[inline]
-fn read_private_keys_from_file(mut file: BufReader<File>) -> Result<Vec<PrivateKeyDer<'static>>> {
+fn read_private_keys_from_file(
+    mut file: BufReader<File>,
+) -> atlas_common::error::Result<Vec<PrivateKeyDer<'static>>> {
     let mut certs = Vec::new();
 
     for item in iter::from_fn(|| read_one(&mut file).transpose()) {
@@ -142,7 +162,7 @@ fn read_private_keys_from_file(mut file: BufReader<File>) -> Result<Vec<PrivateK
 
 fn read_certificates_from_file(
     mut file: &mut BufReader<File>,
-) -> Result<Vec<CertificateDer<'static>>> {
+) -> atlas_common::error::Result<Vec<CertificateDer<'static>>> {
     let mut certs = Vec::new();
 
     for item in iter::from_fn(|| read_one(&mut file).transpose()) {
@@ -159,7 +179,7 @@ fn read_certificates_from_file(
     Ok(certs)
 }
 
-fn default_config(node: u32) -> Result<MIOConfig> {
+fn default_config(node: u32) -> atlas_common::error::Result<MIOConfig> {
     info!("Loading configuration for node {}", node);
     info!("Current directory: {:?}", std::env::current_dir()?);
 
@@ -182,7 +202,7 @@ fn default_config(node: u32) -> Result<MIOConfig> {
 
     let chain = {
         let mut file = BufReader::new(
-            File::open(format!("./tests/ca-root/srv{}/chain", node))
+            File::open(format!("./tests/ca-root/srv{node}/chain"))
                 .context("Failed to open certificate file")
                 .context(format!("Current dir: {:?}", std::env::current_dir()))?,
         );
@@ -195,7 +215,7 @@ fn default_config(node: u32) -> Result<MIOConfig> {
 
     let sk = {
         let file = BufReader::new(
-            File::open(format!("./tests/ca-root/srv{}/key", node))
+            File::open(format!("./tests/ca-root/srv{node}/key"))
                 .context("Failed to open certificate file")
                 .context(format!("Current dir: {:?}", std::env::current_dir()))?,
         );
@@ -421,8 +441,7 @@ mod conn_test {
                     .connect_to_node(other_node_id)?
                 {
                     result_wait.recv()?.context(format!(
-                        "Failed to receive result of connecting to node {:?}",
-                        other_node_id
+                        "Failed to receive result of connecting to node {other_node_id:?}"
                     ))?;
                 }
             }
@@ -440,9 +459,7 @@ mod conn_test {
                     node_ref
                         .connection_controller()
                         .has_connection(&NodeId::from(other_node)),
-                    "Node {:?} does not have connection to node {:?}",
-                    node,
-                    other_node
+                    "Node {node:?} does not have connection to node {other_node:?}"
                 );
             }
         }

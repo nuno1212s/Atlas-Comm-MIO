@@ -1,31 +1,42 @@
 name: pull request
 on:
   pull_request:
+  push:
+    # Sequence of patterns matched against refs/heads
+    branches:
+      - 'main'
+      - 'research/**'
+      - 'releases/**'
 
 jobs:
   lint:
     timeout-minutes: 60
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout workspace
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
         with:
-          submodules: recursive
-          token: ${{ secrets.PAT_TOKEN }}
+          path: Atlas-Comm-MIO
+      - uses: ./Atlas-Comm-MIO/.github/actions/checkout-dependencies
       - uses: Swatinem/rust-cache@v2
       - uses: actions-rs/toolchain@v1
         with:
           profile: minimal
-          toolchain: nightly
+          toolchain: nightly-2025-06-09
           components: rustfmt, clippy
-      - run: |
+      - name: Check versions
+        working-directory: Atlas-Comm-MIO
+        run: |
           rustup --version
           rustup show
           cargo --version
           cargo fmt --version
           cargo clippy --version
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Lint formatting
+        working-directory: Atlas-Comm-MIO
+        run: cargo fmt --all -- --check
+      - name: Lint code
+        working-directory: Atlas-Comm-MIO
+        run: cargo clippy --all-targets --no-deps -- -D warnings
 
   unit-tests:
     timeout-minutes: 5
@@ -37,7 +48,16 @@ jobs:
       CARGO_TERM_COLOR: always
     steps:
       - uses: actions/checkout@v3
+        with:
+          path: Atlas-Comm-MIO
+      - uses: ./Atlas-Comm-MIO/.github/actions/checkout-dependencies
       - uses: Swatinem/rust-cache@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: nightly-2025-06-09
       - uses: taiki-e/install-action@nextest
       - run: cargo build --tests
+        working-directory: Atlas-Comm-MIO
       - run: cargo nextest run
+        working-directory: Atlas-Comm-MIO

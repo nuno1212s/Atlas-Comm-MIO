@@ -8,13 +8,13 @@ use atlas_common::{channel, Err};
 use atlas_communication::lookup_table::MessageModule;
 use atlas_communication::message::{Header, MessageErrors, NetworkSerializedMessage, WireMessage};
 
+use bincode::error::EncodeError;
 use bytes::{Buf, Bytes, BytesMut};
 use getset::Getters;
 use std::io;
 use std::io::{Read, Write};
 use std::mem::size_of;
 use std::time::Instant;
-use bincode::error::EncodeError;
 use thiserror::Error;
 use tracing::{trace, warn};
 
@@ -123,9 +123,7 @@ fn attempt_to_write_bytes_until_block(
             Ok(InternalWorkResult::WouldBlock)
         }
         Err(err) if interrupted(&err) => Ok(InternalWorkResult::Interrupted),
-        Err(err) => {
-            Err(err)
-        }
+        Err(err) => Err(err),
     }
 }
 
@@ -378,7 +376,6 @@ pub(crate) fn read_until_block(
             let bytes_to_read = Header::LENGTH - currently_read_bytes;
 
             let read = if bytes_to_read > 0 {
-
                 match socket.read(&mut read_info.reading_buffer[currently_read_bytes..]) {
                     Ok(0) => {
                         // Connection closed
@@ -501,7 +498,7 @@ pub fn initialize_send_channel(
 ) -> (ChannelSyncTx<ConnMessage>, ChannelSyncRx<ConnMessage>) {
     channel::sync::new_bounded_sync(
         2048,
-        Some(format!("Network Peer Send Message {:?}", peer).as_str()),
+        Some(format!("Network Peer Send Message {peer:?}").as_str()),
     )
 }
 
@@ -510,7 +507,7 @@ pub enum ReadMessageError {
     #[error("Failed to read message due to IO Error {0}")]
     IoError(#[from] io::Error),
     #[error("Message creation error {0}")]
-    MessageErrors(#[from] MessageErrors)
+    MessageErrors(#[from] MessageErrors),
 }
 
 #[derive(Error, Debug)]
