@@ -283,9 +283,7 @@ struct MockNetworkInfoFactory {
 }
 
 impl MockNetworkInfoFactory {
-    const PORT: u32 = 10000;
-
-    fn initialize_for(node_count: usize) -> atlas_common::error::Result<Self> {
+    fn initialize_for(node_count: usize, port: u16) -> atlas_common::error::Result<Self> {
         let buf = [0; 32];
         let mut map = BTreeMap::default();
 
@@ -299,7 +297,7 @@ impl MockNetworkInfoFactory {
                     NodeType::Replica,
                     PublicKey::from(key.public_key()),
                     PeerAddr::new(
-                        format!("127.0.0.1:{}", Self::PORT + (node_id)).parse()?,
+                        format!("127.0.0.1:{}", port + (node_id as u16)).parse()?,
                         String::from("localhost"),
                     ),
                 ),
@@ -348,8 +346,10 @@ impl MockNetworkInfoFactory {
 mod conn_test {
     use std::collections::BTreeMap;
     use std::sync::Arc;
-    use test_log::test;
 
+    use crate::{
+        default_config, MockNetworkInfo, MockNetworkInfoFactory, MockStubController, MockStubInput,
+    };
     use anyhow::{anyhow, Context};
     use atlas_comm_mio::MIOTCPNode;
     use atlas_common::error::*;
@@ -362,16 +362,14 @@ mod conn_test {
     use atlas_communication::message::WireMessage;
     use bytes::Bytes;
     use tracing::{debug, info, warn};
-
-    use crate::{
-        default_config, MockNetworkInfo, MockNetworkInfoFactory, MockStubController, MockStubInput,
-    };
+    use tracing_test::traced_test;
 
     fn initialize_node_set(
         node_count: u32,
+        port: u16,
     ) -> Result<BTreeMap<NodeId, MIOTCPNode<MockNetworkInfo, MockStubInput, MockStubController>>>
     {
-        let factory = MockNetworkInfoFactory::initialize_for(node_count as usize)?;
+        let factory = MockNetworkInfoFactory::initialize_for(node_count as usize, port)?;
 
         let mut nodes = BTreeMap::default();
 
@@ -387,7 +385,8 @@ mod conn_test {
                 Arc::new(network_info),
                 default_config(node.0)?,
                 mock_stub_controller,
-            )?;
+            )
+            .context(format!("Failed to initialize node {node:?}"))?;
 
             nodes.insert(node, nt_node);
         }
@@ -414,12 +413,14 @@ mod conn_test {
     }
 
     #[test]
+    #[traced_test]
     pub fn test_conn() -> Result<()> {
         const NODE_COUNT: u32 = 3;
+        const TEST_PORT: u16 = 11000;
 
         debug!("Initializing node set");
 
-        let nodes = initialize_node_set(NODE_COUNT)?;
+        let nodes = initialize_node_set(NODE_COUNT, TEST_PORT)?;
 
         warn!("Node set initialized, making connections");
 
@@ -447,6 +448,8 @@ mod conn_test {
             }
         }
 
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
         for node in 0..NODE_COUNT {
             let node_ref = nodes.get(&NodeId::from(node)).unwrap();
 
@@ -468,8 +471,9 @@ mod conn_test {
     }
 
     #[test]
+    #[traced_test]
     pub fn test_msg_delivery() -> Result<()> {
-        let nodes = initialize_node_set(2)?;
+        let nodes = initialize_node_set(2, 12000)?;
 
         let node_0_id = NodeId::from(0u32);
 

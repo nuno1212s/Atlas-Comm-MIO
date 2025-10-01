@@ -9,14 +9,16 @@ use mio::{Token, Waker};
 use std::error::Error;
 use std::net::Shutdown;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use thiserror::Error;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::conn_util;
 use crate::conn_util::{ConnCounts, ConnMessage, ReadingBuffer, WritingBuffer};
-use crate::connections::conn_establish::{ConnectionEstablishError, ConnectionHandler};
+use crate::connections::conn_establish::{
+    ConnectionEstablishError, ConnectionHandler, ServerConnectionHandle,
+};
 use crate::epoll::{EpollWorkerGroupHandle, EpollWorkerId, NewConnection, WorkerError};
 use crate::metrics::RQ_SEND_TIME_ID;
 use atlas_common::channel::oneshot::OneShotRx;
@@ -51,6 +53,8 @@ where
 
     group_worker_handle: EpollWorkerGroupHandle<IS>,
 
+    server_threads: Mutex<Vec<ServerConnectionHandle>>,
+
     conn_counts: ConnCounts,
     #[get = "pub"]
     loopback: IS,
@@ -58,23 +62,7 @@ where
     conn_handle: Arc<ConnectionHandler>,
 }
 
-/// A connection to a given peer
-#[derive(Getters, CopyGetters)]
-pub struct PeerConn<IS> {
-    // The peer ID of the connected node
-    #[get_copy = "pub(super)"]
-    connected_peer_id: NodeId,
-    // The stub to propagate messages to the upper levels of the protocol
-    #[get = "pub(super)"]
-    byte_input_stub: IS,
-
-    // A thread-safe counter for generating connection ids
-    conn_id_generator: AtomicU32,
-    //The map connecting each connection to a token in the MIO Workers
-    connections: Arc<SkipMap<u32, Option<ConnHandle>>>,
-    // Sending messages to the connections
-    to_send: (ChannelSyncTx<ConnMessage>, ChannelSyncRx<ConnMessage>),
-}
+type InternalConnectResult<E> = OneShotRx<Result<(), ConnectionEstablishError<E>>>;
 
 impl<NI, CN, CNP> Connections<NI, CN, CNP>
 where
@@ -102,6 +90,7 @@ where
             registered_connections: Default::default(),
             network_info,
             group_worker_handle,
+            server_threads: Mutex::default(),
             conn_counts,
             loopback,
             conn_handle: conn_handler,
@@ -109,13 +98,18 @@ where
     }
 
     pub(super) fn setup_tcp_worker(self: &Arc<Self>, listener: SyncListener) {
-        let _waker = conn_establish::initialize_server(
+        let connection_handle = conn_establish::initialize_server(
             self.own_id,
             listener,
             self.conn_handle.clone(),
             self.network_info.clone(),
             Arc::clone(self),
         );
+
+        self.server_threads
+            .lock()
+            .expect("Lock is poisoned")
+            .push(connection_handle);
     }
 
     pub(crate) fn get_connection(&self, node: &NodeId) -> Option<Arc<PeerConn<CN>>> {
@@ -139,14 +133,12 @@ where
             .collect()
     }
 
-    type InternalConnectResult = OneShotRx<Result<(), ConnectionEstablishError<CNP::Error>>>;
-
     /// Attempt to connect to a given node
     #[allow(clippy::type_complexity)]
     fn internal_connect_to_node(
         self: &Arc<Self>,
         node: NodeId,
-    ) -> Result<Vec<Self::InternalConnectResult>, ConnectionError<CNP::Error>> {
+    ) -> Result<Vec<InternalConnectResult<CNP::Error>>, ConnectionError<CNP::Error>> {
         if node == self.own_id {
             return Err!(ConnectionError::ConnectToSelf);
         }
@@ -471,6 +463,24 @@ where
     ) -> Result<(), ConnectionError<CNP::Error>> {
         self.dc_from_node(node)
     }
+}
+
+/// A connection to a given peer
+#[derive(Getters, CopyGetters)]
+pub struct PeerConn<IS> {
+    // The peer ID of the connected node
+    #[get_copy = "pub(super)"]
+    connected_peer_id: NodeId,
+    // The stub to propagate messages to the upper levels of the protocol
+    #[get = "pub(super)"]
+    byte_input_stub: IS,
+
+    // A thread-safe counter for generating connection ids
+    conn_id_generator: AtomicU32,
+    //The map connecting each connection to a token in the MIO Workers
+    connections: Arc<SkipMap<u32, Option<ConnHandle>>>,
+    // Sending messages to the connections
+    to_send: (ChannelSyncTx<ConnMessage>, ChannelSyncRx<ConnMessage>),
 }
 
 impl<ST> PeerConn<ST> {

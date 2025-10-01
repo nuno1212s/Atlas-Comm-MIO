@@ -18,28 +18,16 @@ anyhow = "1.0"
 thiserror = "1.0"
 bytes = "1"
 tracing = "*"
-strum = "0.25"
 getset = "*"
-
-fastrand = "2.0.1"
-enum-map = "3.0.0-beta.2"
-chrono = "0.4"
-
-futures = "0.3.26"
-futures-timer = "3.0.2"
 
 mio = { version = "1.0.3", features = ["os-poll", "net"] }
 slab = "0.4.8"
-either = "1.9.0"
-smallvec = "1.10.0"
 crossbeam-skiplist = "0.1"
 dashmap = "*"
 bincode = "2"
-serde = "1"
 
 rustls = "0"
 
 [dev-dependencies]
-env_logger = "0.11.1"
-test-log = "0.2.14"
 rustls-pemfile = "2.0.0"
+tracing-test = "*"
