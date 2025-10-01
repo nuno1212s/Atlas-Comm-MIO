@@ -12,6 +12,8 @@ use std::io;
 use std::io::Write;
 use std::net::Shutdown;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicBool;
+use std::thread::JoinHandle;
 use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, error, info, trace, warn};
@@ -786,13 +788,30 @@ impl ConnectionHandler {
     }
 }
 
+pub struct ServerConnectionHandle {
+    join_handle: Option<JoinHandle<()>>,
+    waker: Arc<Waker>,
+    cancel_handle: Arc<AtomicBool>
+}
+
+impl Drop for ServerConnectionHandle {
+    fn drop(&mut self) {
+        self.cancel_handle.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.waker.wake().expect("Failed to wake server worker");
+
+        if let Some(handle) = self.join_handle.take() {
+            handle.join().expect("Failed to join server worker thread");
+        }
+    }
+}
+
 pub fn initialize_server<NI, CN, CNP>(
     my_id: NodeId,
     listener: SyncListener,
     connection_handler: Arc<ConnectionHandler>,
     network_info: Arc<NI>,
     conns: Arc<Connections<NI, CN, CNP>>,
-) -> Arc<Waker>
+) -> ServerConnectionHandle
 where
     NI: NetworkInformationProvider + 'static,
     CN: NodeIncomingStub + 'static,
@@ -808,20 +827,34 @@ where
     .unwrap();
 
     let waker = server_worker.waker.clone();
+    let cancel_handle = Arc::new(AtomicBool::new(false));
 
-    std::thread::Builder::new()
+    let handle = std::thread::Builder::new()
         .name(format!("Server Worker {my_id:?}"))
-        .spawn(move || loop {
-            match server_worker.event_loop() {
-                Ok(_) => {}
-                Err(error) => {
-                    error!("Error in server worker {my_id:?} {error:?}")
+        .spawn({
+            let cancel_handle = cancel_handle.clone();
+
+            move || loop {
+                if cancel_handle.load(std::sync::atomic::Ordering::Relaxed) {
+                    info!("Shutting down server worker for node {my_id:?}");
+                    break;
+                }
+
+                match server_worker.event_loop() {
+                    Ok(_) => {}
+                    Err(error) => {
+                        error!("Error in server worker {my_id:?} {error:?}")
+                    }
                 }
             }
         })
         .expect("Failed to allocate thread for server worker");
 
-    waker
+    ServerConnectionHandle {
+        join_handle: Some(handle),
+        waker,
+        cancel_handle,
+    }
 }
 
 impl PendingConnection {
