@@ -527,10 +527,7 @@ where
                                 None => {
                                     debug!("Received connection ID for token {:?}, from {:?}. No existing connection has been found, initializing.", token, connection_peer_id,);
 
-                                    Ok(ConnectionResult::Connected(
-                                        connection_peer_id,
-                                        received,
-                                    ))
+                                    Ok(ConnectionResult::Connected(connection_peer_id, received))
                                 }
                                 Some(conn) => {
                                     trace!("Received connection ID for token {:?}, from {:?}, node type is: {:?}\
@@ -541,12 +538,9 @@ where
 
                                     connection.fill_channel(channel);
 
-                                    Ok(ConnectionResult::Connected(
-                                        connection_peer_id,
-                                        received,
-                                    ))
+                                    Ok(ConnectionResult::Connected(connection_peer_id, received))
                                 }
-                            }
+                            };
                         }
 
                         for message in received {
@@ -625,7 +619,6 @@ impl ConnectionHandler {
             }
         }
     }
-
 
     pub fn connect_to_node<NI, CN, CNP>(
         self: &Arc<Self>,

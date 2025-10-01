@@ -141,7 +141,6 @@ where
             .collect()
     }
 
-
     /// Attempt to connect to a given node
     #[allow(clippy::type_complexity)]
     fn internal_connect_to_node(
