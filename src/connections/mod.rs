@@ -16,7 +16,9 @@ use tracing::{debug, error, info, instrument, warn};
 
 use crate::conn_util;
 use crate::conn_util::{ConnCounts, ConnMessage, ReadingBuffer, WritingBuffer};
-use crate::connections::conn_establish::{ConnectionEstablishError, ConnectionHandler, ServerConnectionHandle};
+use crate::connections::conn_establish::{
+    ConnectionEstablishError, ConnectionHandler, ServerConnectionHandle,
+};
 use crate::epoll::{EpollWorkerGroupHandle, EpollWorkerId, NewConnection, WorkerError};
 use crate::metrics::RQ_SEND_TIME_ID;
 use atlas_common::channel::oneshot::OneShotRx;
@@ -104,7 +106,8 @@ where
             Arc::clone(self),
         );
 
-        self.server_threads.lock()
+        self.server_threads
+            .lock()
             .expect("Lock is poisoned")
             .push(connection_handle);
     }

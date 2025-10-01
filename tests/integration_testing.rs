@@ -283,7 +283,6 @@ struct MockNetworkInfoFactory {
 }
 
 impl MockNetworkInfoFactory {
-
     fn initialize_for(node_count: usize, port: u16) -> atlas_common::error::Result<Self> {
         let buf = [0; 32];
         let mut map = BTreeMap::default();
@@ -348,6 +347,9 @@ mod conn_test {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
+    use crate::{
+        default_config, MockNetworkInfo, MockNetworkInfoFactory, MockStubController, MockStubInput,
+    };
     use anyhow::{anyhow, Context};
     use atlas_comm_mio::MIOTCPNode;
     use atlas_common::error::*;
@@ -361,13 +363,10 @@ mod conn_test {
     use bytes::Bytes;
     use tracing::{debug, info, warn};
     use tracing_test::traced_test;
-    use crate::{
-        default_config, MockNetworkInfo, MockNetworkInfoFactory, MockStubController, MockStubInput,
-    };
 
     fn initialize_node_set(
         node_count: u32,
-        port: u16
+        port: u16,
     ) -> Result<BTreeMap<NodeId, MIOTCPNode<MockNetworkInfo, MockStubInput, MockStubController>>>
     {
         let factory = MockNetworkInfoFactory::initialize_for(node_count as usize, port)?;
@@ -386,7 +385,8 @@ mod conn_test {
                 Arc::new(network_info),
                 default_config(node.0)?,
                 mock_stub_controller,
-            ).context(format!("Failed to initialize node {node:?}"))?;
+            )
+            .context(format!("Failed to initialize node {node:?}"))?;
 
             nodes.insert(node, nt_node);
         }
@@ -416,7 +416,7 @@ mod conn_test {
     #[traced_test]
     pub fn test_conn() -> Result<()> {
         const NODE_COUNT: u32 = 3;
-        const TEST_PORT : u16 = 11000;
+        const TEST_PORT: u16 = 11000;
 
         debug!("Initializing node set");
 

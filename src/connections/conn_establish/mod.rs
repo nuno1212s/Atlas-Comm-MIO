@@ -11,8 +11,8 @@ use std::fmt::{Debug, Formatter};
 use std::io;
 use std::io::Write;
 use std::net::Shutdown;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 use thiserror::Error;
@@ -791,12 +791,13 @@ impl ConnectionHandler {
 pub struct ServerConnectionHandle {
     join_handle: Option<JoinHandle<()>>,
     waker: Arc<Waker>,
-    cancel_handle: Arc<AtomicBool>
+    cancel_handle: Arc<AtomicBool>,
 }
 
 impl Drop for ServerConnectionHandle {
     fn drop(&mut self) {
-        self.cancel_handle.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.cancel_handle
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         self.waker.wake().expect("Failed to wake server worker");
 
         if let Some(handle) = self.join_handle.take() {
